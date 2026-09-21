@@ -112,6 +112,8 @@ button { font: inherit; color: inherit; }
 .edge-pos { color: var(--good); font-weight: 600; }
 .edge-neg { color: var(--ink-2); }
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+/* Tables right-align by default (they are mostly numbers); words read left. */
+td.txt, th.txt { text-align: left; }
 
 /* --- tabs --- */
 .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin: 0 0 16px; }
@@ -183,6 +185,7 @@ th { color: var(--ink-2); font-weight: 600; }
     <button class="link" data-back="sports">&larr; sports</button>
     <h1 id="games-title">Baseball</h1>
     <p class="sub" id="games-sub"></p>
+    <p style="margin:-6px 0 20px"><button class="btn" id="games-to-history">Past priced games</button></p>
     <div class="odds-bar">
       <button class="btn" id="refresh-data">Refresh game data</button>
       <span class="muted" id="refresh-state"></span>
@@ -223,6 +226,19 @@ th { color: var(--ink-2); font-weight: 600; }
     <div id="panel-bets" hidden></div>
     <p class="muted" id="caveats" style="margin-top:14px"></p>
   </div>
+
+  <div id="view-history" hidden>
+    <button class="link" data-back="games">&larr; games</button>
+    <h1>Past priced games</h1>
+    <p class="sub" id="history-sub"></p>
+    <div class="kpis" id="history-kpis"></div>
+    <p class="muted" id="history-note"></p>
+    <div class="card scroll"><table id="history-games"></table></div>
+    <h2>Calibration</h2>
+    <p class="muted" style="margin-top:-4px">When the model favoured a side at this confidence,
+      how often that side actually won. Well calibrated means the two columns match.</p>
+    <div class="card scroll"><table id="history-cal"></table></div>
+  </div>
 </div>
 <div id="tip"></div>
 
@@ -245,7 +261,11 @@ const api = {
   sports: () => getJSON(STATIC ? "data/sports.json" : "/api/sports"),
   games: () => getJSON(STATIC ? "data/games.json" : "/api/games?days=2"),
   game: (pk) => fetch(STATIC ? `data/game/${encodeURIComponent(pk)}.json` : "/api/game/" + pk),
+  history: () => getJSON(STATIC ? "data/history.json" : "/api/history"),
 };
+// Team names and statuses come from data files; escape before they reach innerHTML.
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g,
+  (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const whenText = (iso) => iso
   ? new Date(iso).toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric",
                                               hour: "numeric", minute: "2-digit" })
@@ -263,7 +283,7 @@ const state = { games: [], detail: null, pollTimer: null, tickTimer: null,
                 pendingGame: null, anchorElapsed: 0, anchorAt: 0, message: "" };
 
 function show(name) {
-  for (const v of ["sports", "games", "progress", "game"]) $("view-" + v).hidden = v !== name;
+  for (const v of ["sports", "games", "progress", "game", "history"]) $("view-" + v).hidden = v !== name;
 }
 document.querySelectorAll("[data-back]").forEach(b =>
   b.onclick = () => { location.hash = b.dataset.back === "sports" ? "" : "#games"; });
@@ -288,10 +308,12 @@ async function route() {
     return startPricing(hash.slice(8));
   }
   if (hash === "games") { show("games"); if (!STATIC) wireDataRefresh(); return loadGames(); }
+  if (hash === "history") { show("history"); return loadHistory(); }
   show("sports");
   return loadSports();
 }
 addEventListener("hashchange", route);
+$("games-to-history").onclick = () => { location.hash = "#history"; };
 
 // ---------------------------------------------------------------- tooltip
 const tip = $("tip");
@@ -825,6 +847,83 @@ function drawTable(d) {
   $("detail-table").innerHTML =
     `<thead><tr><th>runs</th><th>${d.home_team_name}</th><th>${d.away_team_name}</th>` +
     `<th>combined total</th></tr></thead><tbody>${rows}</tbody>`;
+}
+
+// ---------------------------------------------------------------- track record
+/** Past predictions beside their results.
+ *
+ *  Every game is scored on the LAST prediction published before its first
+ *  pitch (web/history.py), so re-pricing after the fact cannot improve this
+ *  page. Games that are not scored are listed with the reason, not dropped. */
+async function loadHistory() {
+  const h = await api.history();
+  const s = h.summary || { games: 0 };
+  const count = (status) => h.games.filter(g => g.status === status).length;
+  const notScored = count("not scored");
+  // "Past" means over: a game that simply hasn't been played yet is on the
+  // slate, not here. A postponed one stays, since it carries a reason.
+  const upcoming = (g) => g.status === "pending" && !g.reason;
+  const past = h.games.filter(g => !upcoming(g));
+  const waiting = h.games.length - past.length;
+  $("history-sub").textContent =
+    `${s.games} finished game${s.games === 1 ? "" : "s"} scored` +
+    (notScored ? ` · ${notScored} not scored` : "") +
+    `. Each game is scored on the last prediction published before its first pitch.` +
+    (waiting ? ` ${waiting} priced game${waiting === 1 ? "" : "s"} still to be played ` +
+               `will appear here once ${waiting === 1 ? "it finishes" : "they finish"}.` : "") +
+    (h.generated_at ? ` Updated ${whenText(h.generated_at)}.` : "");
+
+  if (!s.games) {
+    $("history-kpis").innerHTML = "";
+    $("history-note").textContent = "No finished games yet — results appear the morning after.";
+  } else {
+    const w = s.win;
+    const correct = Math.round(w.accuracy * s.games);
+    const tiles = [
+      [pct(w.accuracy), `picks correct · ${correct} of ${s.games}`],
+      [w.log_loss.toFixed(3), "win log loss · coin flip is 0.693, lower is better"],
+    ];
+    if (s.total) tiles.push([pct(s.total.actual_over_rate),
+      `went over the model's total · it expected ${pct(s.total.predicted_over_rate)}`]);
+    tiles.push([pct(s.run_line.actual_cover_rate),
+      `home covered the run line · it expected ${pct(s.run_line.predicted_cover_rate)}`]);
+    $("history-kpis").innerHTML = tiles.map(([v, k]) =>
+      `<div class="kpi"><div class="v">${v}</div><div class="k">${k}</div></div>`).join("");
+    // Say how little a small sample shows, next to the numbers it qualifies.
+    $("history-note").textContent =
+      `${s.games} games is a small sample: one result moves accuracy by several points, and ` +
+      `log loss needs hundreds of games before a difference of 0.01 means anything.`;
+  }
+
+  $("history-cal").innerHTML = h.calibration.length
+    ? `<thead><tr><th>model's confidence</th><th class="num">games</th>` +
+      `<th class="num">predicted win rate</th><th class="num">actual win rate</th></tr></thead><tbody>` +
+      h.calibration.map(c => `<tr><td>${esc(c.bin)}</td><td class="num">${c.games}</td>` +
+        `<td class="num">${pct(c.predicted)}</td><td class="num">${pct(c.actual)}</td></tr>`).join("") +
+      `</tbody>`
+    : `<tbody><tr><td class="muted">Nothing to calibrate yet.</td></tr></tbody>`;
+
+  const verdict = (g) => g.pick_correct === true ? "✓ right" : g.pick_correct === false ? "✗ wrong" : "—";
+  const status = (g) => {
+    if (g.status === "scored") return `<span class="badge priced">scored</span>`;
+    const label = g.status === "pending" ? (g.reason ? esc(g.reason).toLowerCase() : "pending") : "not scored";
+    const why = g.status === "not scored" ? ` <span class="muted">${esc(g.reason)}</span>` : "";
+    return `<span class="badge none">${label}</span>${why}`;
+  };
+  $("history-games").innerHTML = past.length
+    ? `<thead><tr><th>date</th><th class="txt">game</th><th class="txt">model's pick</th>` +
+      `<th class="num">final</th><th class="txt">pick</th><th class="txt">total</th>` +
+      `<th class="txt">status</th></tr></thead><tbody>` +
+      past.map(g => {
+        const final = g.away_runs == null ? "—" : `${g.away_runs}–${g.home_runs}`;
+        const total = `${g.total_line} · ${g.p_over == null ? "—" : pct(g.p_over)} over` +
+          (g.total_result ? ` → ${g.total_result}` : "");
+        return `<tr><td>${esc(g.game_date)}</td><td class="txt">${esc(g.away)} @ ${esc(g.home)}</td>` +
+          `<td class="txt">${esc(g.pick)} ${pct(g.pick_prob)}</td><td class="num">${final}</td>` +
+          `<td class="txt">${verdict(g)}</td><td class="txt">${esc(total)}</td>` +
+          `<td class="txt">${status(g)}</td></tr>`;
+      }).join("") + `</tbody>`
+    : `<tbody><tr><td class="muted">No priced games have been played yet.</td></tr></tbody>`;
 }
 
 route();
