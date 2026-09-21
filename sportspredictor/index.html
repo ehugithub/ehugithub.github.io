@@ -1,0 +1,833 @@
+<!doctype html>
+<html lang="en" data-static="1">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sports Predictor</title>
+<style>
+/* Light is the base; dark redefines only the tokens, so no colour has its sole
+   definition inside a media query. Palette slots are the validated categorical
+   pair (blue/orange) and diverging poles (blue/red) -- all four pass CVD
+   separation and contrast in both modes. */
+:root {
+  --surface: #fcfcfb;  --plane: #f9f9f7;
+  --ink: #0b0b0b;      --ink-2: #52514e;   --muted: #898781;
+  --grid: #e1e0d9;     --axis: #c3c2b7;    --border: rgba(11,11,11,.10);
+  --cat-1: #2a78d6;    --cat-2: #eb6834;
+  --div-pos: #2a78d6;  --div-neg: #e34948; --div-mid: #898781;
+  --seq: #2a78d6;
+  --good: #0ca30c;     --warn: #fab219;
+  --priced-bg: #f1f8f1; --priced-edge: #bcdcbc;
+}
+/* The dark steps are chosen from the same ramps and separately validated against
+   the dark surface -- not an automatic inversion of the light ones. Declared
+   twice so an explicit choice wins in both directions: the media query covers
+   "system", the attribute selector covers a deliberate ?theme=dark. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --surface: #1a1a19; --plane: #0d0d0d;
+    --ink: #fff;        --ink-2: #c3c2b7;  --muted: #898781;
+    --grid: #2c2c2a;    --axis: #383835;   --border: rgba(255,255,255,.10);
+    --cat-1: #3987e5;   --cat-2: #d95926;
+    --div-pos: #3987e5; --div-neg: #e66767;
+    --seq: #3987e5;
+    --priced-bg: #16221a; --priced-edge: #2d4433;
+  }
+}
+:root[data-theme="dark"] {
+  --surface: #1a1a19; --plane: #0d0d0d;
+  --ink: #fff;        --ink-2: #c3c2b7;  --muted: #898781;
+  --grid: #2c2c2a;    --axis: #383835;   --border: rgba(255,255,255,.10);
+  --cat-1: #3987e5;   --cat-2: #d95926;
+  --div-pos: #3987e5; --div-neg: #e66767;
+  --seq: #3987e5;
+  --priced-bg: #16221a; --priced-edge: #2d4433;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--plane); color: var(--ink);
+  font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+.wrap { max-width: 1080px; margin: 0 auto; padding: 24px 20px 64px; }
+h1 { font-size: 20px; margin: 0 0 4px; letter-spacing: -.01em; }
+h2 { font-size: 16px; margin: 28px 0 10px; letter-spacing: -.01em; }
+.sub { color: var(--ink-2); font-size: 13px; margin: 0 0 20px; }
+.muted { color: var(--muted); font-size: 12px; }
+button { font: inherit; color: inherit; }
+
+/* --- sport picker --- */
+.sports { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
+.sport {
+  text-align: left; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 10px; padding: 18px; cursor: pointer;
+}
+.sport:hover:not([disabled]) { border-color: var(--cat-1); }
+.sport[disabled] { cursor: not-allowed; opacity: .62; }
+.sport .name { font-size: 16px; font-weight: 600; }
+.sport .why { color: var(--muted); font-size: 12px; margin-top: 6px; }
+
+/* --- game list --- */
+.daygroup { margin-bottom: 22px; }
+.daygroup h3 { font-size: 13px; color: var(--ink-2); margin: 0 0 8px; font-weight: 600; }
+.game {
+  width: 100%; text-align: left; display: flex; align-items: center; gap: 12px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  padding: 11px 14px; margin-bottom: 6px; cursor: pointer;
+}
+.game:hover:not([disabled]) { border-color: var(--cat-1); }
+.game[disabled] { cursor: not-allowed; opacity: .55; }
+.game .match { flex: 1; font-weight: 500; }
+.game .venue { color: var(--muted); font-size: 12px; }
+
+/* Priced vs unpriced is a property of the WHOLE row, not a badge: it is the
+   first thing to read off the list, and a chip at the right edge makes the eye
+   travel to find it. A tinted ground plus a left accent reads at a glance. */
+.game.is-priced {
+  background: var(--priced-bg);
+  border-color: var(--priced-edge);
+  border-left: 3px solid var(--good);
+}
+.game.is-priced .match { font-weight: 600; }
+
+/* Within unpriced, how much is known about the starters. Outlined, never
+   filled: these sit next to a tinted row and a fill would compete with it. */
+.badge {
+  font-size: 11px; padding: 2px 9px; border-radius: 999px; white-space: nowrap;
+  border: 1.5px solid var(--border); color: var(--ink-2);
+}
+.badge.priced    { color: var(--good);  border-color: var(--good); }
+.badge.confirmed { color: var(--good);  border-color: var(--good); }
+.badge.probable  { color: var(--cat-1); border-color: var(--cat-1); }
+.badge.none      { color: var(--muted); border-color: var(--border); }
+
+/* --- bets --- */
+.odds-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.btn {
+  background: var(--cat-1); color: #fff; border: 0; border-radius: 7px;
+  padding: 7px 13px; cursor: pointer; font-size: 13px; font-weight: 500;
+}
+.btn[disabled] { opacity: .55; cursor: not-allowed; }
+.book { margin-bottom: 10px; }
+.book h5 { margin: 0 0 4px; font-size: 13px; font-weight: 600; }
+.edge-pos { color: var(--good); font-weight: 600; }
+.edge-neg { color: var(--ink-2); }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* --- tabs --- */
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin: 0 0 16px; }
+.tab {
+  background: none; border: 0; border-bottom: 2px solid transparent; cursor: pointer;
+  padding: 8px 12px; color: var(--ink-2); font-size: 13px; font-weight: 500;
+}
+.tab:hover { color: var(--ink); }
+.tab.is-on { color: var(--ink); border-bottom-color: var(--cat-1); }
+.lineups { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 780px) { .lineups { grid-template-columns: 1fr; } }
+/* The probable starter is outlined rather than tinted: the border carries the
+   emphasis and the name keeps its ink token, so the text stays at full contrast
+   instead of wearing an accent colour. */
+.sp { display: flex; align-items: baseline; gap: 8px; margin-bottom: 12px;
+      padding: 8px 10px; border: 1.5px solid var(--cat-1); border-radius: 8px; }
+.sp .nm { font-weight: 600; }
+.sp .tag { color: var(--cat-1); font-size: 11px; font-weight: 600;
+           letter-spacing: .03em; text-transform: uppercase; }
+.slot { color: var(--muted); width: 18px; display: inline-block; }
+.pos { color: var(--muted); font-size: 11px; }
+.src { font-size: 11px; padding: 1px 7px; border-radius: 999px;
+       border: 1px solid var(--border); color: var(--ink-2); }
+.src.posted { color: var(--good); border-color: var(--good); }
+
+/* --- game detail --- */
+.kpis { display: flex; flex-wrap: wrap; gap: 26px; margin: 4px 0 22px; }
+.kpi .v { font-size: 26px; font-weight: 650; letter-spacing: -.02em; }
+.kpi .k { color: var(--muted); font-size: 12px; }
+.charts { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 780px) { .charts { grid-template-columns: 1fr; } }
+.card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 10px; padding: 14px 16px 10px; min-width: 0;
+}
+.card h4 { margin: 0 0 2px; font-size: 13px; font-weight: 600; }
+.card .note { color: var(--muted); font-size: 11.5px; margin: 0 0 8px; }
+.legend { display: flex; gap: 14px; font-size: 12px; color: var(--ink-2); margin-bottom: 6px; }
+.legend i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; margin-right: 5px; }
+.scroll { overflow-x: auto; }
+svg { display: block; max-width: 100%; }
+table { border-collapse: collapse; width: 100%; font-size: 12.5px; margin-top: 6px; }
+th, td { text-align: right; padding: 4px 8px; border-bottom: 1px solid var(--grid); }
+th:first-child, td:first-child { text-align: left; }
+th { color: var(--ink-2); font-weight: 600; }
+#tip {
+  position: fixed; pointer-events: none; opacity: 0; transition: opacity .1s;
+  background: var(--ink); color: var(--surface); font-size: 12px;
+  padding: 5px 8px; border-radius: 6px; white-space: nowrap; z-index: 10;
+}
+.link { background: none; border: 0; color: var(--cat-1); cursor: pointer; padding: 0; font-size: 13px; }
+.progress { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 20px; }
+.bar { height: 4px; background: var(--grid); border-radius: 2px; overflow: hidden; margin-top: 12px; }
+.bar i { display: block; height: 100%; width: 30%; background: var(--cat-1); border-radius: 2px;
+         animation: slide 1.4s ease-in-out infinite; }
+@keyframes slide { 0% { margin-left: -30%; } 100% { margin-left: 100%; } }
+[hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div id="view-sports">
+    <h1>Sports Predictor</h1>
+    <p class="sub">Pick a sport.</p>
+    <div class="sports" id="sports"></div>
+  </div>
+
+  <div id="view-games" hidden>
+    <button class="link" data-back="sports">&larr; sports</button>
+    <h1 id="games-title">Baseball</h1>
+    <p class="sub" id="games-sub"></p>
+    <div class="odds-bar">
+      <button class="btn" id="refresh-data">Refresh game data</button>
+      <span class="muted" id="refresh-state"></span>
+    </div>
+    <div id="games"></div>
+  </div>
+
+  <div id="view-progress" hidden>
+    <button class="link" data-back="games">&larr; games</button>
+    <h1>Pricing…</h1>
+    <div class="progress">
+      <div id="progress-msg">starting…</div>
+      <div class="bar"><i></i></div>
+      <p class="muted" id="progress-elapsed" style="margin:10px 0 0"></p>
+    </div>
+  </div>
+
+  <div id="view-game" hidden>
+    <button class="link" data-back="games">&larr; games</button>
+    <h1 id="game-title"></h1>
+    <p class="sub" id="game-sub"></p>
+    <div class="kpis" id="kpis"></div>
+    <div class="tabs">
+      <button class="tab is-on" data-tab="charts">Distributions</button>
+      <button class="tab" data-tab="starters">Starters</button>
+      <button class="tab" data-tab="bets">Bets</button>
+    </div>
+    <div id="panel-charts">
+    <div class="charts">
+      <div class="card" id="card-runs"></div>
+      <div class="card" id="card-total"></div>
+    </div>
+    <div class="card" id="card-margin" style="margin-top:16px"></div>
+    <h2>Numbers</h2>
+    <div class="card scroll"><table id="detail-table"></table></div>
+    </div>
+    <div id="panel-starters" hidden></div>
+    <div id="panel-bets" hidden></div>
+    <p class="muted" id="caveats" style="margin-top:14px"></p>
+  </div>
+</div>
+<div id="tip"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const pct = (x) => (x * 100).toFixed(1) + "%";
+
+/* Static mode is the published site (web/export_site.py sets data-static="1").
+   There is no server behind it, so data comes from files the export wrote,
+   nothing can be priced on demand, and book odds are not published. Paths are
+   RELATIVE on purpose: GitHub Pages serves a project site under
+   /sportspredictor/, where "/data/..." would point at the wrong root. */
+const STATIC = document.documentElement.dataset.static === "1";
+async function getJSON(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
+  return res.json();
+}
+const api = {
+  sports: () => getJSON(STATIC ? "data/sports.json" : "/api/sports"),
+  games: () => getJSON(STATIC ? "data/games.json" : "/api/games?days=2"),
+  game: (pk) => fetch(STATIC ? `data/game/${encodeURIComponent(pk)}.json` : "/api/game/" + pk),
+};
+const whenText = (iso) => iso
+  ? new Date(iso).toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric",
+                                              hour: "numeric", minute: "2-digit" })
+  : "unknown";
+if (STATIC) {
+  // Controls that only a live local server can answer.
+  document.querySelector("#view-games .odds-bar").hidden = true;
+  document.querySelector('.tab[data-tab="bets"]').hidden = true;
+}
+
+// ?theme=dark|light forces a theme; without it the page follows the system.
+const forced = new URLSearchParams(location.search).get("theme");
+if (forced === "dark" || forced === "light") document.documentElement.dataset.theme = forced;
+const state = { games: [], detail: null, pollTimer: null, tickTimer: null,
+                pendingGame: null, anchorElapsed: 0, anchorAt: 0, message: "" };
+
+function show(name) {
+  for (const v of ["sports", "games", "progress", "game"]) $("view-" + v).hidden = v !== name;
+}
+document.querySelectorAll("[data-back]").forEach(b =>
+  b.onclick = () => { location.hash = b.dataset.back === "sports" ? "" : "#games"; });
+
+/* Hash routing, so a reload keeps you where you were and a game is linkable.
+   "" -> sports, "#games" -> the slate, "#game/<pk>" -> one game,
+   "#pricing/<pk>" -> the progress view for the pass that game belongs to.
+
+   EVERY view gets a hash, including progress. Showing a view without changing
+   the hash leaves the back button assigning the hash its own current value,
+   which fires no hashchange and does nothing -- the bug that made "games" dead
+   on the priced path, and then again on the pricing path. */
+async function route() {
+  const hash = location.hash.slice(1);
+  if (hash.startsWith("game/")) {
+    const [pk, tab] = hash.slice(5).split("/");
+    return loadDetail(pk, tab || "charts");
+  }
+  if (hash.startsWith("pricing/")) {
+    // Nothing prices on demand on the published site; a stale link lands on the slate.
+    if (STATIC) { location.hash = "#games"; return; }
+    return startPricing(hash.slice(8));
+  }
+  if (hash === "games") { show("games"); if (!STATIC) wireDataRefresh(); return loadGames(); }
+  show("sports");
+  return loadSports();
+}
+addEventListener("hashchange", route);
+
+// ---------------------------------------------------------------- tooltip
+const tip = $("tip");
+function bindTip(el, text) {
+  el.addEventListener("mousemove", (e) => {
+    tip.textContent = text;
+    tip.style.opacity = 1;
+    tip.style.left = Math.min(e.clientX + 12, innerWidth - tip.offsetWidth - 8) + "px";
+    tip.style.top = (e.clientY - 32) + "px";
+  });
+  el.addEventListener("mouseleave", () => { tip.style.opacity = 0; });
+}
+
+// ---------------------------------------------------------------- screen 1
+async function loadSports() {
+  const sports = await api.sports();
+  $("sports").innerHTML = "";
+  for (const s of sports) {
+    const b = document.createElement("button");
+    b.className = "sport";
+    b.disabled = !s.enabled;
+    b.innerHTML = `<div class="name">${s.name}</div>` +
+      (s.enabled ? `<div class="why">ready</div>` : `<div class="why">${s.reason}</div>`);
+    if (s.enabled) b.onclick = () => { location.hash = "#games"; };
+    $("sports").appendChild(b);
+  }
+}
+
+/** Bring schedule, box scores and flattened tables current.
+ *
+ *  Not the same thing as the automatic schedule refresh, which only refetches
+ *  the upcoming window. This also scrapes finished games and rebuilds the
+ *  tables -- which is what a day needs before its remaining games can be
+ *  priced at all, since a stub dated on or before the newest COMPLETED game is
+ *  refused rather than spliced into history. */
+function wireDataRefresh() {
+  const button = $("refresh-data");
+  const label = $("refresh-state");
+  button.onclick = async () => {
+    const res = await fetch("/api/data/refresh", { method: "POST" });
+    if (!res.ok) { label.textContent = (await res.json()).message || "already running"; return; }
+    pollDataRefresh();
+  };
+
+  async function pollDataRefresh() {
+    button.disabled = true;
+    const s = await (await fetch("/api/data/status")).json();
+    label.textContent = s.state === "running"
+      ? `${s.step}… ${s.elapsed_s}s`
+      : s.state === "error" ? `failed at ${s.step}: ${s.message}` : s.message;
+    if (s.state === "running") return setTimeout(pollDataRefresh, 2000);
+    button.disabled = false;
+    if (s.state === "done") loadGames();   // badges and completion states have moved
+  }
+
+  // Surface a refresh already running when the screen is opened.
+  fetch("/api/data/status").then(r => r.json()).then(s => {
+    if (s.state === "running") pollDataRefresh();
+  });
+}
+
+// ---------------------------------------------------------------- screen 2
+async function loadGames() {
+  $("games-sub").textContent = STATIC ? "loading…" : "checking for newly announced starters…";
+  const payload = await api.games();
+  state.games = payload.games;
+  state.generatedAt = payload.generated_at;
+  if (STATIC) {
+    // The published slate is a snapshot. Saying when it was taken is what keeps
+    // a day-old page from passing for today's.
+    const priced = state.games.filter(g => g.priced).length;
+    $("games-sub").textContent =
+      `${state.games.length} scheduled · ${priced} priced · updated ${whenText(payload.generated_at)}. ` +
+      `Predictions are published once a day; a game is priced once both starters are announced.`;
+  } else {
+    const priceable = state.games.filter(g => g.priced || (!g.blocked && g.starters !== "none")).length;
+    // Say when the schedule was last checked. Probables appear through the
+    // morning, so "no starter yet" is only as true as the last refetch.
+    const sched = payload.schedule || {};
+    const when = sched.refreshed ? "just refreshed"
+      : sched.reason === "fresh" ? `schedule ${Math.round(sched.age_s)}s old`
+      : `schedule refresh failed (${sched.reason})`;
+    $("games-sub").textContent =
+      `${state.games.length} scheduled over the next few days · ${priceable} can be priced · ${when}. ` +
+      `Starters are usually published 1–2 days ahead.`;
+  }
+
+  const byDay = {};
+  for (const g of state.games) (byDay[g.date] ??= []).push(g);
+
+  $("games").innerHTML = "";
+  for (const [day, games] of Object.entries(byDay)) {
+    const group = document.createElement("div");
+    group.className = "daygroup";
+    const nice = new Date(day + "T12:00:00").toLocaleDateString(undefined,
+      { weekday: "long", month: "short", day: "numeric" });
+    group.innerHTML = `<h3>${nice}</h3>`;
+    for (const g of games) {
+      const b = document.createElement("button");
+      b.className = "game" + (g.priced ? " is-priced" : "");
+      // On the published site only a priced game has anything to open.
+      b.disabled = STATIC ? !g.priced : (!g.priced && (g.blocked || g.starters === "none"));
+      const tag = g.priced
+        ? { cls: "priced", label: "priced" }
+        : STATIC && !g.blocked && g.starters !== "none"
+        ? { cls: "none", label: "not priced yet" }
+        : g.blocked
+        // Not "no starters yet": the starters are known, the DAY is the problem,
+        // and telling someone to wait for a lineup that already exists is worse
+        // than saying nothing.
+        ? { cls: "none", label: "day already underway" }
+        : { confirmed: { cls: "confirmed", label: "confirmed starters" },
+            probable:  { cls: "probable",  label: "probable starters" },
+            none:      { cls: "none",      label: "no starters yet" } }[g.starters];
+      if (g.blocked && !g.priced) b.title = g.blocked;
+      b.innerHTML =
+        `<span class="match">${g.away} <span class="muted">@</span> ${g.home}</span>` +
+        `<span class="venue">${g.venue}</span><span class="badge ${tag.cls}">${tag.label}</span>`;
+      if (!b.disabled) b.onclick = () => openGame(g);
+      group.appendChild(b);
+    }
+    $("games").appendChild(group);
+  }
+}
+
+// ---------------------------------------------------------------- pricing
+function openGame(game) {
+  location.hash = (game.priced ? "#game/" : "#pricing/") + game.game_pk;
+}
+
+/** Show progress for the pass covering `gamePk`, starting it if needed.
+ *
+ *  Reached only through the hash, so the back button has somewhere to go back
+ *  FROM. Re-entering while a pass is already running is harmless: the server
+ *  answers a second /api/price with 409 and this just resumes watching. */
+async function startPricing(gamePk) {
+  if (!state.games.length) {
+    state.games = (await api.games()).games;
+  }
+  const game = state.games.find(g => g.game_pk === gamePk);
+  if (!game) { location.hash = "#games"; return; }
+
+  state.pendingGame = game;
+  const sameDay = state.games.filter(g => g.date === game.date && (g.priced || (!g.blocked && g.starters !== "none"))).length;
+  show("progress");
+  $("progress-msg").textContent =
+    `Pricing all ${sameDay} game${sameDay === 1 ? "" : "s"} for ${game.date} in one pass — ` +
+    `the cost is the pass, not the game, so the rest will be instant afterwards.`;
+  await fetch("/api/price", { method: "POST", body: JSON.stringify({ date: game.date }) });
+  state.anchorElapsed = 0; state.anchorAt = performance.now(); state.message = "starting…";
+  tick();
+  poll();
+}
+
+/* The clock runs locally at 10fps; the SERVER is still polled every 2s.
+   Asking the server 600 times a minute for a number it only advances in real
+   time would be pure waste on a 15-minute job, so each status reply anchors a
+   local clock and the display interpolates between replies. */
+const TICK_MS = 100;
+const POLL_MS = 2000;
+
+function tick() {
+  clearInterval(state.tickTimer);
+  state.tickTimer = setInterval(() => {
+    if ($("view-progress").hidden) return clearInterval(state.tickTimer);
+    const elapsed = state.anchorElapsed + (performance.now() - state.anchorAt) / 1000;
+    $("progress-elapsed").textContent = `${state.message} · ${elapsed.toFixed(1)}s elapsed`;
+  }, TICK_MS);
+}
+
+function poll() {
+  clearTimeout(state.pollTimer);
+  state.pollTimer = setTimeout(async () => {
+    // Stop watching if the user walked away; the pass keeps running server-side
+    // and they can open the game once its badge flips to "priced".
+    if ($("view-progress").hidden) { clearInterval(state.tickTimer); return; }
+    const s = await (await fetch("/api/price/status")).json();
+    // Re-anchor rather than add: the server's number is authoritative, and a
+    // local clock that only ever accumulates would drift over fifteen minutes.
+    state.anchorElapsed = s.elapsed_s;
+    state.anchorAt = performance.now();
+    state.message = s.message;
+    if (s.state === "running") return poll();
+    clearInterval(state.tickTimer);
+    $("progress-elapsed").textContent = `${s.message} · ${s.elapsed_s.toFixed(1)}s elapsed`;
+    if (s.state === "error") { $("progress-msg").textContent = "Pricing failed: " + s.message; return; }
+    location.hash = "#game/" + state.pendingGame.game_pk;
+  }, POLL_MS);
+}
+
+// ---------------------------------------------------------------- screen 3
+async function loadDetail(gamePk, tab = "charts") {
+  if (STATIC && tab === "bets") tab = "charts";
+  const res = await api.game(gamePk);
+  if (!res.ok) { location.hash = "#games"; return; }
+  const d = state.detail = await res.json();
+  show("game");
+
+  $("game-title").textContent = `${d.away_team_name} @ ${d.home_team_name}`;
+  $("game-sub").textContent = `${d.venue_name} · ${d.game_date} · ${d.model}`;
+
+  const fair = (p) => p >= 0.5 ? `${Math.round(-100 * p / (1 - p))}` : `+${Math.round(100 * (1 - p) / p)}`;
+  $("kpis").innerHTML = [
+    [pct(d.p_home_win), `${d.home_team_name} win · ${fair(d.p_home_win)}`],
+    [d.mu_home.toFixed(2) + " – " + d.mu_away.toFixed(2), "expected runs (home – away)"],
+    [d.total_line.toFixed(1), `total · ${pct(d.p_over)} over`],
+    [pct(d.p_home_cover), `home ${d.run_line > 0 ? "+" : ""}${d.run_line}`],
+  ].map(([v, k]) => `<div class="kpi"><div class="v">${v}</div><div class="k">${k}</div></div>`).join("");
+
+  drawRuns(d);
+  drawTotal(d);
+  drawMargin(d);
+  drawTable(d);
+  drawStarters(d);
+  drawBets(d);
+  showTab(tab);
+
+  const dome = d.dome_rate != null && d.dome_rate > 0.15 && d.dome_rate < 0.85
+    ? ` Roof state guessed (${Math.round(d.dome_rate * 100)}% of recent games closed).` : "";
+  $("caveats").textContent =
+    `Totals run about 2.9% under the 2026 run environment, so the over figures are ` +
+    `biased low. α is the global fallback, not a 2026 fit. Lineups are projected ` +
+    `(6.8 of 9 batters correct). No market line exists for an unplayed game, so ` +
+    `these are fair prices with no vig and no edge.` + dome +
+    (STATIC
+      ? ` Published ${whenText(d.published_at)}. Not betting advice: this model's win ` +
+        `probabilities are measurably worse than the closing betting line.`
+      : "");
+}
+
+function showTab(name) {
+  document.querySelectorAll(".tab").forEach(x => x.classList.toggle("is-on", x.dataset.tab === name));
+  $("panel-charts").hidden = name !== "charts";
+  $("panel-starters").hidden = name !== "starters";
+  $("panel-bets").hidden = name !== "bets";
+}
+// The tab lives in the hash so a starters view is linkable and survives reload.
+document.querySelectorAll(".tab").forEach(t => t.onclick = () => {
+  const pk = (location.hash.slice(1).split("/") || [])[1];
+  location.hash = `#game/${pk}/${t.dataset.tab}`;
+});
+
+/** Who the price is based on: the probable starter and the nine batters.
+ *
+ *  The provenance badge is not decoration. A projected lineup is right for
+ *  about 6.8 of 9 batters, and lineup quality is the largest single input to a
+ *  side's run rate -- so "projected" is a real caveat on the number above it. */
+function drawStarters(d) {
+  const side = (who, sp, lineup, source) => {
+    if (!lineup) return `<div class="card"><h4>${who}</h4>
+      <p class="note">Priced before this view existed, so the lineup was not
+      recorded. Re-price this day to capture it.</p></div>`;
+    const rows = lineup.map(b =>
+      `<tr><td><span class="slot">${b.slot}</span>${b.name}</td>` +
+      `<td style="text-align:right"><span class="pos">${b.position}</span></td></tr>`).join("");
+    return `<div class="card">
+      <h4>${who}</h4>
+      <div class="sp"><span class="tag">Probable SP</span><span class="nm">${sp ?? "—"}</span></div>
+      <table>${rows}</table>
+      <p class="note" style="margin-top:8px">
+        Lineup <span class="src ${source}">${source ?? "unknown"}</span>
+        ${source === "projected" ? "— the previous game's nine, ~6.8 of 9 correct." : ""}
+      </p></div>`;
+  };
+  $("panel-starters").innerHTML = `<div class="lineups">` +
+    side(d.away_team_name, d.away_sp_name, d.away_lineup, d.away_lineup_source) +
+    side(d.home_team_name, d.home_sp_name, d.home_lineup, d.home_lineup_source) +
+    `</div>`;
+}
+
+/** Every book's line, with the model re-priced AT that book's line.
+ *
+ *  Edge is expected profit per unit staked at the real, vig-inclusive price --
+ *  not a probability difference. A model that is 3pp better than a book on a
+ *  price carrying 4.5% margin is still a losing bet, and only the EV form says
+ *  so. Positive edges are highlighted; they are rare and usually small. */
+function drawBets(d) {
+  const bets = d.bets || { status: {}, books: [] };
+  const st = bets.status || {};
+  const age = st.age_s == null ? null : Math.round(st.age_s / 60);
+  const quota = st.quota || {};
+
+  const header =
+    `<div class="odds-bar">
+       <button class="btn" id="fetch-odds">Fetch current lines</button>
+       <span class="muted">${
+         st.fetched_at
+           ? `lines fetched ${age === 0 ? "just now" : age + " min ago"}`
+           : "no lines fetched yet"}${
+         quota.remaining != null ? ` · ${quota.remaining} of 500 monthly requests left` : ""}
+       </span>
+     </div>
+     <p class="note" style="margin:-4px 0 12px">
+       One fetch covers every game on the board and costs ${st.request_cost ?? 3} requests —
+       fetching a single game costs exactly the same, so there is no per-game button.
+     </p>`;
+
+  if (!st.have_key) {
+    $("panel-bets").innerHTML = header +
+      `<div class="card"><p class="note">No API key configured. ${st.reason || ""}</p></div>`;
+    wireFetch();
+    return;
+  }
+  if (!bets.books.length) {
+    $("panel-bets").innerHTML = header +
+      `<div class="card"><p class="note">No lines for this game yet. Books post a day or
+       so ahead, and a game already under way drops off the board.</p></div>`;
+    wireFetch();
+    return;
+  }
+
+  const label = { moneyline: "ML", total: "Total", run_line: "RL" };
+  const rows = (b) => b.markets.map(m => {
+    const side = m.side === "home" ? d.home_team_name : m.side === "away" ? d.away_team_name
+                 : m.side.charAt(0).toUpperCase() + m.side.slice(1);
+    const pretty = m.american > 0 ? "+" + m.american : m.american;
+    return `<tr>
+      <td>${label[m.market]}${m.line != null ? " " + m.line : ""} — ${side}</td>
+      <td class="num">${pretty}</td>
+      <td class="num">${(m.book_prob * 100).toFixed(1)}%</td>
+      <td class="num">${(m.model_prob * 100).toFixed(1)}%</td>
+      <td class="num ${m.edge > 0 ? "edge-pos" : "edge-neg"}">${(m.edge * 100).toFixed(1)}%</td>
+    </tr>`;
+  }).join("");
+
+  $("panel-bets").innerHTML = header + bets.books.map(b => `
+    <div class="card book">
+      <h5>${b.book} <span class="muted" style="font-weight:400">
+        ${b.moneyline_overround ? `· ${((b.moneyline_overround - 1) * 100).toFixed(1)}% margin` : ""}
+      </span></h5>
+      <table>
+        <thead><tr><th>market</th><th class="num">price</th><th class="num">book</th>
+        <th class="num">model</th><th class="num">edge</th></tr></thead>
+        <tbody>${rows(b)}</tbody>
+      </table>
+    </div>`).join("");
+  wireFetch();
+}
+
+function wireFetch() {
+  const button = $("fetch-odds");
+  if (!button) return;
+  button.onclick = async () => {
+    button.disabled = true;
+    button.textContent = "fetching…";
+    const res = await fetch("/api/odds/fetch", { method: "POST" });
+    const body = await res.json();
+    if (!res.ok) {
+      button.textContent = "Fetch current lines";
+      button.disabled = false;
+      alert(body.error || "fetch failed");
+      return;
+    }
+    loadDetail(state.detail.game_pk, "bets");
+  };
+}
+
+// ---------------------------------------------------------------- charts
+const SVG = "http://www.w3.org/2000/svg";
+const el = (n, a = {}) => { const e = document.createElementNS(SVG, n);
+  for (const [k, v] of Object.entries(a)) e.setAttribute(k, v); return e; };
+
+/** Shared frame: gridlines, baseline, x labels. Returns the plot geometry. */
+function frame(svg, W, H, labels, max, { everyN = 1 } = {}) {
+  const M = { t: 8, r: 8, b: 22, l: 30 };
+  const pw = W - M.l - M.r, ph = H - M.t - M.b;
+  for (let i = 0; i <= 4; i++) {
+    const y = M.t + ph * (i / 4);
+    svg.appendChild(el("line", { x1: M.l, x2: W - M.r, y1: y, y2: y,
+      stroke: "var(--grid)", "stroke-width": 1 }));
+    const t = el("text", { x: M.l - 6, y: y + 3.5, "text-anchor": "end",
+      fill: "var(--muted)", "font-size": 10 });
+    t.textContent = Math.round(max * (1 - i / 4) * 100) + "%";
+    svg.appendChild(t);
+  }
+  svg.appendChild(el("line", { x1: M.l, x2: W - M.r, y1: M.t + ph, y2: M.t + ph,
+    stroke: "var(--axis)", "stroke-width": 1 }));
+  labels.forEach((lab, i) => {
+    if (i % everyN) return;
+    const t = el("text", { x: M.l + pw * ((i + 0.5) / labels.length), y: H - 7,
+      "text-anchor": "middle", fill: "var(--muted)", "font-size": 10 });
+    t.textContent = lab;
+    svg.appendChild(t);
+  });
+  return { M, pw, ph };
+}
+
+/** A bar with a 4px rounded data-end, anchored to the baseline. */
+function bar(x, y, w, h, fill) {
+  const r = Math.min(4, w / 2, h);
+  const b = el("path", { fill, d:
+    `M${x},${y + h} L${x},${y + r} Q${x},${y} ${x + r},${y} L${x + w - r},${y} ` +
+    `Q${x + w},${y} ${x + w},${y + r} L${x + w},${y + h} Z` });
+  return b;
+}
+
+function drawRuns(d) {
+  const N = 16;  // 0..15, with the tail folded into the last column
+  const home = d.distributions.home_runs.slice(0, N);
+  const away = d.distributions.away_runs.slice(0, N);
+  home[N - 1] = d.distributions.home_runs.slice(N - 1).reduce((a, b) => a + b, 0);
+  away[N - 1] = d.distributions.away_runs.slice(N - 1).reduce((a, b) => a + b, 0);
+  const max = Math.max(...home, ...away) * 1.08;
+
+  const W = 500, H = 210;
+  $("card-runs").innerHTML =
+    `<h4>Runs scored</h4><p class="note">Per team. Right-skewed: the median sits below the mean.</p>
+     <div class="legend">
+       <span><i style="background:var(--cat-1)"></i>${d.home_team_name}</span>
+       <span><i style="background:var(--cat-2)"></i>${d.away_team_name}</span>
+     </div><div class="scroll"></div>`;
+  const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img" });
+  const { M, pw, ph } = frame(svg, W, H,
+    [...Array(N).keys()].map(i => i === N - 1 ? `${N - 1}+` : i), max);
+
+  const slot = pw / N;
+  home.forEach((hv, i) => {
+    // 2px of surface between the paired bars so they read as two marks.
+    const w = (slot - 4) / 2 - 1;
+    [[hv, "var(--cat-1)", d.home_team_name, 0], [away[i], "var(--cat-2)", d.away_team_name, w + 2]]
+      .forEach(([v, fill, who, dx]) => {
+        const h = Math.max(v / max * ph, v > 0 ? 1.5 : 0);
+        const b = bar(M.l + slot * i + 2 + dx, M.t + ph - h, w, h, fill);
+        bindTip(b, `${who} — ${i === N - 1 ? `${N - 1}+` : i} runs: ${pct(v)}`);
+        svg.appendChild(b);
+      });
+  });
+  $("card-runs").querySelector(".scroll").appendChild(svg);
+}
+
+function drawTotal(d) {
+  const entries = Object.entries(d.distributions.total)
+    .map(([k, v]) => [+k, v]).filter(([k]) => k >= 2 && k <= 21).sort((a, b) => a[0] - b[0]);
+  const max = Math.max(...entries.map(e => e[1])) * 1.08;
+  const line = d.total_line;
+  const isInteger = Number.isInteger(line);
+  const push = isInteger ? (d.distributions.total[String(line)] ?? 0) : 0;
+
+  const W = 500, H = 210;
+  $("card-total").innerHTML =
+    `<h4>Total runs</h4><p class="note">Both teams combined. Line at ${line.toFixed(1)}` +
+    (isInteger ? ` — <strong>${pct(push)} pushes</strong> on exactly ${line}.` : ` (no push possible).`) +
+    `</p><div class="scroll"></div>`;
+  const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img" });
+  const { M, pw, ph } = frame(svg, W, H, entries.map(e => e[0]), max, { everyN: 2 });
+
+  const slot = pw / entries.length;
+  entries.forEach(([k, v], i) => {
+    const h = Math.max(v / max * ph, 1.5);
+    // One series, so ONE hue -- a second lighter step failed both the contrast
+    // check against the surface (1.74:1) and, in dark mode, the normal-vision
+    // separation floor. The push bar is singled out by a direct label instead,
+    // which is the honest way to emphasise one mark within a single series.
+    const isPush = isInteger && k === line;
+    const b = bar(M.l + slot * i + 2, M.t + ph - h, slot - 4, h, "var(--seq)");
+    bindTip(b, `${k} runs: ${pct(v)}${isPush ? " (push)" : ""}`);
+    svg.appendChild(b);
+    if (isPush) {
+      const t = el("text", { x: M.l + slot * i + slot / 2, y: M.t + ph - h - 5,
+        "text-anchor": "middle", fill: "var(--ink)", "font-size": 11, "font-weight": 600 });
+      t.textContent = pct(v) + " push";
+      svg.appendChild(t);
+    }
+  });
+  // The line itself, drawn between the two bars it separates.
+  const idx = entries.findIndex(([k]) => k > line);
+  if (idx > 0) {
+    const x = M.l + slot * idx;
+    svg.appendChild(el("line", { x1: x, x2: x, y1: M.t, y2: M.t + ph,
+      stroke: "var(--ink-2)", "stroke-width": 2, "stroke-dasharray": "3 3" }));
+  }
+  $("card-total").querySelector(".scroll").appendChild(svg);
+}
+
+function drawMargin(d) {
+  const entries = Object.entries(d.distributions.margin)
+    .map(([k, v]) => [+k, v]).filter(([k]) => k >= -9 && k <= 9).sort((a, b) => a[0] - b[0]);
+  const max = Math.max(...entries.map(e => e[1])) * 1.08;
+
+  const W = 900, H = 200;
+  $("card-margin").innerHTML =
+    `<h4>Margin (home − away)</h4>
+     <p class="note">Nothing at 0 by construction: a tie after nine goes to extras, and that
+     mass is redistributed to ±1 at the empirical 52% home rate — which is also why ±1 is
+     asymmetric.</p>
+     <div class="legend">
+       <span><i style="background:var(--div-pos)"></i>${d.home_team_name} wins</span>
+       <span><i style="background:var(--div-neg)"></i>${d.away_team_name} wins</span>
+     </div><div class="scroll"></div>`;
+  const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img" });
+  const { M, pw, ph } = frame(svg, W, H, entries.map(e => e[0] > 0 ? "+" + e[0] : e[0]), max);
+
+  const slot = pw / entries.length;
+  entries.forEach(([k, v], i) => {
+    const h = Math.max(v / max * ph, v > 0 ? 1.5 : 0);
+    if (h === 0) return;
+    const fill = k === 0 ? "var(--div-mid)" : (k > 0 ? "var(--div-pos)" : "var(--div-neg)");
+    const b = bar(M.l + slot * i + 2, M.t + ph - h, slot - 4, h, fill);
+    const who = k > 0 ? d.home_team_name : d.away_team_name;
+    bindTip(b, `${who} by ${Math.abs(k)}: ${pct(v)}`);
+    svg.appendChild(b);
+  });
+  $("card-margin").querySelector(".scroll").appendChild(svg);
+}
+
+/** The table view, so nothing on this page is available only through colour.
+ *
+ *  The final row folds the tail for ALL THREE columns. Folding only the team
+ *  columns -- as a first version did -- labels the row "12+" while the combined
+ *  total shows exactly 12, quietly dropping most of that distribution: the
+ *  totals run to ~20 where a single team rarely passes 12. Each column must sum
+ *  to 1 down the table, and the test below is that it does. */
+function drawTable(d) {
+  const N = 13;
+  const tail = (arr, from) => arr.slice(from).reduce((a, b) => a + b, 0);
+  const totalAt = (k) => d.distributions.total[String(k)] ?? 0;
+  const totalTail = Object.entries(d.distributions.total)
+    .reduce((sum, [k, v]) => (+k >= N - 1 ? sum + v : sum), 0);
+
+  const rows = [...Array(N).keys()].map(i => {
+    const last = i === N - 1;
+    const cells = [
+      last ? tail(d.distributions.home_runs, i) : d.distributions.home_runs[i],
+      last ? tail(d.distributions.away_runs, i) : d.distributions.away_runs[i],
+      last ? totalTail : totalAt(i),
+    ];
+    return `<tr><td>${last ? `${N - 1}+` : i}</td>` +
+           cells.map(v => `<td>${pct(v)}</td>`).join("") + `</tr>`;
+  }).join("");
+
+  $("detail-table").innerHTML =
+    `<thead><tr><th>runs</th><th>${d.home_team_name}</th><th>${d.away_team_name}</th>` +
+    `<th>combined total</th></tr></thead><tbody>${rows}</tbody>`;
+}
+
+route();
+</script>
+</body>
+</html>
