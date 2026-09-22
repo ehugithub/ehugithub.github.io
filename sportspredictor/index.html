@@ -78,6 +78,12 @@ button { font: inherit; color: inherit; }
 .game[disabled] { cursor: not-allowed; opacity: .55; }
 .game .match { flex: 1; font-weight: 500; }
 .game .venue { color: var(--muted); font-size: 12px; }
+.game .final { font-weight: 650; font-variant-numeric: tabular-nums; min-width: 48px; text-align: right; }
+/* Box score: innings are a grid of numbers, so centred; player names read left. */
+table.linescore th, table.linescore td { text-align: center; }
+table.linescore th:first-child, table.linescore td:first-child { text-align: left; }
+tr.sub-player td:first-child { padding-left: 20px; color: var(--ink-2); }
+.boxside { margin-top: 18px; }
 
 /* Priced vs unpriced is a property of the WHOLE row, not a badge: it is the
    first thing to read off the list, and a chip at the right edge makes the eye
@@ -185,7 +191,10 @@ th { color: var(--ink-2); font-weight: 600; }
     <button class="link" data-back="sports">&larr; sports</button>
     <h1 id="games-title">Baseball</h1>
     <p class="sub" id="games-sub"></p>
-    <p style="margin:-6px 0 20px"><button class="btn" id="games-to-history">Past priced games</button></p>
+    <div class="tabs">
+      <button class="tab section-tab is-on" data-view="games">Upcoming</button>
+      <button class="tab section-tab" data-view="past">Past</button>
+    </div>
     <div class="odds-bar">
       <button class="btn" id="refresh-data">Refresh game data</button>
       <span class="muted" id="refresh-state"></span>
@@ -211,6 +220,7 @@ th { color: var(--ink-2); font-weight: 600; }
     <div class="tabs">
       <button class="tab is-on" data-tab="charts">Distributions</button>
       <button class="tab" data-tab="starters">Starters</button>
+      <button class="tab" data-tab="box" hidden>Box score</button>
       <button class="tab" data-tab="bets">Bets</button>
     </div>
     <div id="panel-charts">
@@ -223,17 +233,22 @@ th { color: var(--ink-2); font-weight: 600; }
     <div class="card scroll"><table id="detail-table"></table></div>
     </div>
     <div id="panel-starters" hidden></div>
+    <div id="panel-box" hidden></div>
     <div id="panel-bets" hidden></div>
     <p class="muted" id="caveats" style="margin-top:14px"></p>
   </div>
 
   <div id="view-history" hidden>
-    <button class="link" data-back="games">&larr; games</button>
-    <h1>Past priced games</h1>
+    <button class="link" data-back="sports">&larr; sports</button>
+    <h1>Baseball</h1>
     <p class="sub" id="history-sub"></p>
+    <div class="tabs">
+      <button class="tab section-tab" data-view="games">Upcoming</button>
+      <button class="tab section-tab is-on" data-view="past">Past</button>
+    </div>
     <div class="kpis" id="history-kpis"></div>
     <p class="muted" id="history-note"></p>
-    <div class="card scroll"><table id="history-games"></table></div>
+    <div id="history-games"></div>
     <h2>Calibration</h2>
     <p class="muted" style="margin-top:-4px">When the model favoured a side at this confidence,
       how often that side actually won. Well calibrated means the two columns match.</p>
@@ -262,6 +277,7 @@ const api = {
   games: () => getJSON(STATIC ? "data/games.json" : "/api/games?days=2"),
   game: (pk) => fetch(STATIC ? `data/game/${encodeURIComponent(pk)}.json` : "/api/game/" + pk),
   history: () => getJSON(STATIC ? "data/history.json" : "/api/history"),
+  past: (pk) => fetch(STATIC ? `data/past/${encodeURIComponent(pk)}.json` : "/api/past/" + pk),
 };
 // Team names and statuses come from data files; escape before they reach innerHTML.
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g,
@@ -286,7 +302,7 @@ function show(name) {
   for (const v of ["sports", "games", "progress", "game", "history"]) $("view-" + v).hidden = v !== name;
 }
 document.querySelectorAll("[data-back]").forEach(b =>
-  b.onclick = () => { location.hash = b.dataset.back === "sports" ? "" : "#games"; });
+  b.onclick = () => { location.hash = b.dataset.back === "sports" ? "" : "#" + b.dataset.back; });
 
 /* Hash routing, so a reload keeps you where you were and a game is linkable.
    "" -> sports, "#games" -> the slate, "#game/<pk>" -> one game,
@@ -302,18 +318,25 @@ async function route() {
     const [pk, tab] = hash.slice(5).split("/");
     return loadDetail(pk, tab || "charts");
   }
+  if (hash.startsWith("past/")) {
+    const [pk, tab] = hash.slice(5).split("/");
+    return loadPastDetail(pk, tab || "charts");
+  }
   if (hash.startsWith("pricing/")) {
     // Nothing prices on demand on the published site; a stale link lands on the slate.
     if (STATIC) { location.hash = "#games"; return; }
     return startPricing(hash.slice(8));
   }
   if (hash === "games") { show("games"); if (!STATIC) wireDataRefresh(); return loadGames(); }
-  if (hash === "history") { show("history"); return loadHistory(); }
+  // "#history" was this view's first address; kept so an old link still lands.
+  if (hash === "past" || hash === "history") { show("history"); return loadHistory(); }
   show("sports");
   return loadSports();
 }
 addEventListener("hashchange", route);
-$("games-to-history").onclick = () => { location.hash = "#history"; };
+// Upcoming | Past: two tabs of the one Baseball section, each its own address.
+document.querySelectorAll(".section-tab").forEach(t =>
+  t.onclick = () => { location.hash = "#" + t.dataset.view; });
 
 // ---------------------------------------------------------------- tooltip
 const tip = $("tip");
@@ -507,10 +530,12 @@ function poll() {
 // ---------------------------------------------------------------- screen 3
 async function loadDetail(gamePk, tab = "charts") {
   if (STATIC && tab === "bets") tab = "charts";
+  if (tab === "box") tab = "charts";  // a box score exists only for a played game
   const res = await api.game(gamePk);
   if (!res.ok) { location.hash = "#games"; return; }
   const d = state.detail = await res.json();
   show("game");
+  setDetailMode("upcoming");
 
   $("game-title").textContent = `${d.away_team_name} @ ${d.home_team_name}`;
   $("game-sub").textContent = `${d.venue_name} · ${d.game_date} · ${d.model}`;
@@ -545,16 +570,30 @@ async function loadDetail(gamePk, tab = "charts") {
 }
 
 function showTab(name) {
-  document.querySelectorAll(".tab").forEach(x => x.classList.toggle("is-on", x.dataset.tab === name));
+  document.querySelectorAll("#view-game .tab").forEach(x => x.classList.toggle("is-on", x.dataset.tab === name));
   $("panel-charts").hidden = name !== "charts";
   $("panel-starters").hidden = name !== "starters";
+  $("panel-box").hidden = name !== "box";
   $("panel-bets").hidden = name !== "bets";
 }
-// The tab lives in the hash so a starters view is linkable and survives reload.
-document.querySelectorAll(".tab").forEach(t => t.onclick = () => {
-  const pk = (location.hash.slice(1).split("/") || [])[1];
-  location.hash = `#game/${pk}/${t.dataset.tab}`;
+// The tab lives in the hash so a tab is linkable and survives reload. The first
+// segment ("game" or "past") is kept, so a tab never moves you between the two.
+document.querySelectorAll("#view-game .tab").forEach(t => t.onclick = () => {
+  const [page, pk] = location.hash.slice(1).split("/");
+  location.hash = `#${page}/${pk}/${t.dataset.tab}`;
 });
+
+/** One detail view serves an upcoming game and a played one; this sets which. */
+function setDetailMode(mode) {
+  const back = document.querySelector("#view-game [data-back]");
+  back.dataset.back = mode === "past" ? "past" : "games";
+  back.innerHTML = mode === "past" ? "&larr; past games" : "&larr; games";
+  document.querySelector('#view-game .tab[data-tab="box"]').hidden = mode !== "past";
+  // The panel is shared: never let an upcoming game inherit the last past game's box.
+  if (mode !== "past") $("panel-box").innerHTML = "";
+  // No bets on a finished game, and none ever on the published site.
+  document.querySelector('#view-game .tab[data-tab="bets"]').hidden = STATIC || mode === "past";
+}
 
 /** Who the price is based on: the probable starter and the nine batters.
  *
@@ -701,6 +740,16 @@ function frame(svg, W, H, labels, max, { everyN = 1 } = {}) {
   return { M, pw, ph };
 }
 
+/** "▼ final" over the bar where a played game actually landed. A direct label
+ *  in ink rather than a new colour: the charts are one- or two-hue by design,
+ *  and a third hue for one bar would read as another series. */
+function markFinal(svg, x, y) {
+  const t = el("text", { x, y: Math.max(y, 11), "text-anchor": "middle",
+    fill: "var(--ink)", "font-size": 11, "font-weight": 600 });
+  t.textContent = "▼ final";
+  svg.appendChild(t);
+}
+
 /** A bar with a 4px rounded data-end, anchored to the baseline. */
 function bar(x, y, w, h, fill) {
   const r = Math.min(4, w / 2, h);
@@ -720,7 +769,9 @@ function drawRuns(d) {
 
   const W = 500, H = 210;
   $("card-runs").innerHTML =
-    `<h4>Runs scored</h4><p class="note">Per team. Right-skewed: the median sits below the mean.</p>
+    `<h4>Runs scored</h4><p class="note">Per team. Right-skewed: the median sits below the mean.` +
+    (d.actual ? ` Final: ${esc(d.home_team_name)} <strong>${d.actual.home}</strong>, ` +
+                `${esc(d.away_team_name)} <strong>${d.actual.away}</strong>.` : "") + `</p>
      <div class="legend">
        <span><i style="background:var(--cat-1)"></i>${d.home_team_name}</span>
        <span><i style="background:var(--cat-2)"></i>${d.away_team_name}</span>
@@ -756,6 +807,7 @@ function drawTotal(d) {
   $("card-total").innerHTML =
     `<h4>Total runs</h4><p class="note">Both teams combined. Line at ${line.toFixed(1)}` +
     (isInteger ? ` — <strong>${pct(push)} pushes</strong> on exactly ${line}.` : ` (no push possible).`) +
+    (d.actual ? ` Final total: <strong>${d.actual.home + d.actual.away}</strong>.` : "") +
     `</p><div class="scroll"></div>`;
   const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img" });
   const { M, pw, ph } = frame(svg, W, H, entries.map(e => e[0]), max, { everyN: 2 });
@@ -776,6 +828,9 @@ function drawTotal(d) {
         "text-anchor": "middle", fill: "var(--ink)", "font-size": 11, "font-weight": 600 });
       t.textContent = pct(v) + " push";
       svg.appendChild(t);
+    }
+    if (d.actual && k === d.actual.home + d.actual.away) {
+      markFinal(svg, M.l + slot * i + slot / 2, M.t + ph - h - (isPush ? 18 : 5));
     }
   });
   // The line itself, drawn between the two bars it separates.
@@ -815,6 +870,9 @@ function drawMargin(d) {
     const who = k > 0 ? d.home_team_name : d.away_team_name;
     bindTip(b, `${who} by ${Math.abs(k)}: ${pct(v)}`);
     svg.appendChild(b);
+    if (d.actual && k === d.actual.home - d.actual.away) {
+      markFinal(svg, M.l + slot * i + slot / 2, M.t + ph - h - 5);
+    }
   });
   $("card-margin").querySelector(".scroll").appendChild(svg);
 }
@@ -847,6 +905,107 @@ function drawTable(d) {
   $("detail-table").innerHTML =
     `<thead><tr><th>runs</th><th>${d.home_team_name}</th><th>${d.away_team_name}</th>` +
     `<th>combined total</th></tr></thead><tbody>${rows}</tbody>`;
+}
+
+// ---------------------------------------------------------------- past game
+/** A played game: the prediction it is judged by -- the last one before first
+ *  pitch, or for an unscored game its latest, labelled as such -- beside what
+ *  happened. Same charts as an upcoming game, with the final
+ *  marked on them, plus the box score. Nothing here is recomputed afterwards. */
+async function loadPastDetail(gamePk, tab = "charts") {
+  if (tab === "bets") tab = "charts";
+  const res = await api.past(gamePk);
+  if (!res.ok) { location.hash = "#past"; return; }
+  const d = state.detail = await res.json();
+  const a = d.past.away_runs, h = d.past.home_runs;
+  d.actual = { home: h, away: a };
+  show("game");
+  setDetailMode("past");
+
+  $("game-title").textContent = `${d.away_team_name} ${a} @ ${d.home_team_name} ${h}`;
+  $("game-sub").textContent =
+    `Final · ${d.venue_name} · ${d.game_date} · predicted ${whenText(d.priced_at)}`;
+
+  const scored = d.past.status === "scored";
+  const verdict = !scored ? "not scored"
+    : d.past.pick_correct === true ? "✓ right"
+    : d.past.pick_correct === false ? "✗ wrong" : "no verdict";
+  const covered = (h - a) + d.run_line > 0;
+  $("kpis").innerHTML = [
+    [pct(d.past.pick_prob), `model's pick: ${esc(d.past.pick)} · ${verdict}`],
+    [d.mu_home.toFixed(2) + " – " + d.mu_away.toFixed(2),
+     `expected runs (home – away) · final ${h} – ${a}`],
+    [d.total_line.toFixed(1),
+     `total · ${pct(d.p_over)} over · went ${d.past.total_result} (${a + h})`],
+    [pct(d.p_home_cover),
+     `home ${d.run_line > 0 ? "+" : ""}${d.run_line} · ${covered ? "covered" : "did not cover"}`],
+  ].map(([v, k]) => `<div class="kpi"><div class="v">${v}</div><div class="k">${k}</div></div>`).join("");
+
+  drawRuns(d);
+  drawTotal(d);
+  drawMargin(d);
+  drawTable(d);
+  drawStarters(d);
+  drawBox(d);
+  showTab(tab);
+
+  const when = d.past.priced_before_start === true
+    ? `This is the prediction as it was published before first pitch (${whenText(d.priced_at)})`
+    : d.past.priced_before_start === false
+    ? `This prediction was made after first pitch (${whenText(d.priced_at)}), so it is ` +
+      `shown for reference only`
+    : `This prediction was published ${whenText(d.priced_at)}; the game's scheduled start ` +
+      `is unknown`;
+  $("caveats").textContent =
+    `${when}; nothing on this page was recomputed after the game.` +
+    (d.past.status === "not scored" ? ` Not counted in the track record: ${d.past.reason}.` : "") +
+    (STATIC ? " Not betting advice: this model's win probabilities are measurably worse " +
+              "than the closing betting line." : "");
+}
+
+/** Line score always; batting and pitching lines when this build carries them. */
+function drawBox(d) {
+  const box = d.box;
+  if (!box) { $("panel-box").innerHTML = `<p class="muted">No box score on file for this game.</p>`; return; }
+  const line = box.line;
+  const n = Math.max(9, line.away.innings.length, line.home.innings.length);
+  // An unplayed half-inning -- the home 9th when already ahead -- prints as "x".
+  const inning = (arr, i) => i >= arr.length ? "" : (arr[i] == null ? "x" : arr[i]);
+  const row = (side, name) =>
+    `<tr><td>${esc(name)}</td>` +
+    [...Array(n).keys()].map(i => `<td>${inning(line[side].innings, i)}</td>`).join("") +
+    `<td><strong>${line[side].R ?? ""}</strong></td><td>${line[side].H ?? ""}</td>` +
+    `<td>${line[side].E ?? ""}</td></tr>`;
+  let html =
+    `<div class="card scroll"><table class="linescore"><thead><tr><th></th>` +
+    [...Array(n).keys()].map(i => `<th>${i + 1}</th>`).join("") +
+    `<th>R</th><th>H</th><th>E</th></tr></thead><tbody>` +
+    row("away", d.away_team_name) + row("home", d.home_team_name) + `</tbody></table></div>`;
+
+  if (box.players) {
+    const bat = ["AB", "R", "H", "RBI", "BB", "SO", "HR"];
+    const pit = ["IP", "H", "R", "ER", "BB", "SO", "HR", "P"];
+    for (const [side, name] of [["away", d.away_team_name], ["home", d.home_team_name]]) {
+      const lines = box.players[side];
+      html += `<div class="boxside"><h2>${esc(name)}</h2>` +
+        `<div class="card scroll"><table><thead><tr><th>batting</th>` +
+        bat.map(c => `<th class="num">${c}</th>`).join("") + `</tr></thead><tbody>` +
+        lines.batting.map(b => `<tr${b.sub ? ' class="sub-player"' : ""}><td>${esc(b.name)} ` +
+          `<span class="pos">${esc(b.pos ?? "")}</span></td>` +
+          bat.map(c => `<td class="num">${b[c]}</td>`).join("") + `</tr>`).join("") +
+        `</tbody></table></div>` +
+        `<div class="card scroll" style="margin-top:10px"><table><thead><tr><th>pitching</th>` +
+        pit.map(c => `<th class="num">${c}</th>`).join("") + `</tr></thead><tbody>` +
+        lines.pitching.map(p => `<tr><td>${esc(p.name)}</td>` +
+          pit.map(c => `<td class="num">${p[c] ?? ""}</td>`).join("") + `</tr>`).join("") +
+        `</tbody></table></div></div>`;
+    }
+  } else {
+    html += `<p class="muted" style="margin-top:10px">Player batting and pitching lines are ` +
+            `shown in the local app only: MLB's data terms allow individual, non-commercial ` +
+            `use, not republishing every game's box score.</p>`;
+  }
+  $("panel-box").innerHTML = html;
 }
 
 // ---------------------------------------------------------------- track record
@@ -903,27 +1062,40 @@ async function loadHistory() {
       `</tbody>`
     : `<tbody><tr><td class="muted">Nothing to calibrate yet.</td></tr></tbody>`;
 
-  const verdict = (g) => g.pick_correct === true ? "✓ right" : g.pick_correct === false ? "✗ wrong" : "—";
-  const status = (g) => {
-    if (g.status === "scored") return `<span class="badge priced">scored</span>`;
-    const label = g.status === "pending" ? (g.reason ? esc(g.reason).toLowerCase() : "pending") : "not scored";
-    const why = g.status === "not scored" ? ` <span class="muted">${esc(g.reason)}</span>` : "";
-    return `<span class="badge none">${label}</span>${why}`;
-  };
-  $("history-games").innerHTML = past.length
-    ? `<thead><tr><th>date</th><th class="txt">game</th><th class="txt">model's pick</th>` +
-      `<th class="num">final</th><th class="txt">pick</th><th class="txt">total</th>` +
-      `<th class="txt">status</th></tr></thead><tbody>` +
-      past.map(g => {
-        const final = g.away_runs == null ? "—" : `${g.away_runs}–${g.home_runs}`;
-        const total = `${g.total_line} · ${g.p_over == null ? "—" : pct(g.p_over)} over` +
-          (g.total_result ? ` → ${g.total_result}` : "");
-        return `<tr><td>${esc(g.game_date)}</td><td class="txt">${esc(g.away)} @ ${esc(g.home)}</td>` +
-          `<td class="txt">${esc(g.pick)} ${pct(g.pick_prob)}</td><td class="num">${final}</td>` +
-          `<td class="txt">${verdict(g)}</td><td class="txt">${esc(total)}</td>` +
-          `<td class="txt">${status(g)}</td></tr>`;
-      }).join("") + `</tbody>`
-    : `<tbody><tr><td class="muted">No priced games have been played yet.</td></tr></tbody>`;
+  // Grouped by day and clickable, like the upcoming slate. A game opens its own
+  // page once it has a final score; a postponed one is listed but not clickable.
+  const box = $("history-games");
+  box.innerHTML = past.length ? "" :
+    `<p class="muted">No priced games have been played yet.</p>`;
+  const byDay = {};
+  for (const g of past) (byDay[g.game_date] ??= []).push(g);
+  for (const [day, games] of Object.entries(byDay)) {
+    const group = document.createElement("div");
+    group.className = "daygroup";
+    const nice = new Date(day + "T12:00:00").toLocaleDateString(undefined,
+      { weekday: "long", month: "short", day: "numeric" });
+    group.innerHTML = `<h3>${nice}</h3>`;
+    for (const g of games) {
+      const played = g.away_runs != null;
+      const tag = g.status === "not scored" ? { cls: "none", label: "not scored" }
+        : g.status !== "scored" ? { cls: "none", label: (g.reason || "not played").toLowerCase() }
+        : g.pick_correct === true ? { cls: "priced", label: "✓ right" }
+        : g.pick_correct === false ? { cls: "none", label: "✗ wrong" }
+        : { cls: "none", label: "no verdict" };
+      const b = document.createElement("button");
+      b.className = "game";
+      b.disabled = !played;
+      if (g.status === "not scored") b.title = g.reason;
+      b.innerHTML =
+        `<span class="match">${esc(g.away)} <span class="muted">@</span> ${esc(g.home)}</span>` +
+        `<span class="venue">pick: ${esc(g.pick)} ${pct(g.pick_prob)}</span>` +
+        `<span class="final">${played ? `${g.away_runs}–${g.home_runs}` : "—"}</span>` +
+        `<span class="badge ${tag.cls}">${esc(tag.label)}</span>`;
+      if (played) b.onclick = () => { location.hash = "#past/" + g.game_pk; };
+      group.appendChild(b);
+    }
+    box.appendChild(group);
+  }
 }
 
 route();
