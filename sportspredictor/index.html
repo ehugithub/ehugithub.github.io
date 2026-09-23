@@ -238,6 +238,45 @@ th { color: var(--ink-2); font-weight: 600; }
     <p class="muted" id="caveats" style="margin-top:14px"></p>
   </div>
 
+  <div id="view-nfl" hidden>
+    <button class="link" data-back="sports">&larr; sports</button>
+    <h1>Football</h1>
+    <p class="sub" id="nfl-sub"></p>
+    <div class="tabs">
+      <button class="tab section-tab is-on" data-view="nfl">Upcoming</button>
+      <button class="tab section-tab" data-view="nfl-past">Past</button>
+    </div>
+    <p class="muted" id="nfl-note"></p>
+    <div id="nfl-games"></div>
+  </div>
+
+  <div id="view-nfl-past" hidden>
+    <button class="link" data-back="sports">&larr; sports</button>
+    <h1>Football</h1>
+    <p class="sub" id="nfl-past-sub"></p>
+    <div class="tabs">
+      <button class="tab section-tab" data-view="nfl">Upcoming</button>
+      <button class="tab section-tab is-on" data-view="nfl-past">Past</button>
+    </div>
+    <div class="kpis" id="nfl-past-kpis"></div>
+    <p class="muted" id="nfl-past-note"></p>
+    <div id="nfl-past-games"></div>
+  </div>
+
+  <div id="view-nfl-game" hidden>
+    <button class="link" data-back="nfl">&larr; football</button>
+    <h1 id="nfl-title"></h1>
+    <p class="sub" id="nfl-game-sub"></p>
+    <div class="kpis" id="nfl-kpis"></div>
+    <div class="tabs">
+      <button class="tab is-on" data-nfl-tab="form">Form</button>
+      <button class="tab" data-nfl-tab="box" hidden>Box score</button>
+    </div>
+    <div id="nfl-panel-form"></div>
+    <div id="nfl-panel-box" hidden></div>
+    <p class="muted" id="nfl-caveats" style="margin-top:14px"></p>
+  </div>
+
   <div id="view-history" hidden>
     <button class="link" data-back="sports">&larr; sports</button>
     <h1>Baseball</h1>
@@ -278,6 +317,10 @@ const api = {
   game: (pk) => fetch(STATIC ? `data/game/${encodeURIComponent(pk)}.json` : "/api/game/" + pk),
   history: () => getJSON(STATIC ? "data/history.json" : "/api/history"),
   past: (pk) => fetch(STATIC ? `data/past/${encodeURIComponent(pk)}.json` : "/api/past/" + pk),
+  nflGames: () => getJSON(STATIC ? "data/nfl/games.json" : "/api/nfl/games"),
+  nflPast: () => getJSON(STATIC ? "data/nfl/past.json" : "/api/nfl/past"),
+  nflGame: (id) => fetch(STATIC ? `data/nfl/game/${encodeURIComponent(id)}.json`
+                                : "/api/nfl/game/" + id),
 };
 // Team names and statuses come from data files; escape before they reach innerHTML.
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g,
@@ -299,7 +342,9 @@ const state = { games: [], detail: null, pollTimer: null, tickTimer: null,
                 pendingGame: null, anchorElapsed: 0, anchorAt: 0, message: "" };
 
 function show(name) {
-  for (const v of ["sports", "games", "progress", "game", "history"]) $("view-" + v).hidden = v !== name;
+  for (const v of ["sports", "games", "progress", "game", "history", "nfl", "nfl-past",
+                   "nfl-game"])
+    $("view-" + v).hidden = v !== name;
 }
 document.querySelectorAll("[data-back]").forEach(b =>
   b.onclick = () => { location.hash = b.dataset.back === "sports" ? "" : "#" + b.dataset.back; });
@@ -327,6 +372,12 @@ async function route() {
     if (STATIC) { location.hash = "#games"; return; }
     return startPricing(hash.slice(8));
   }
+  if (hash.startsWith("nfl/")) {
+    const [id, tab] = hash.slice(4).split("/");
+    return loadNflGame(id, tab || "form");
+  }
+  if (hash === "nfl") { show("nfl"); return loadNflSlate(); }
+  if (hash === "nfl-past") { show("nfl-past"); return loadNflPast(); }
   if (hash === "games") { show("games"); if (!STATIC) wireDataRefresh(); return loadGames(); }
   // "#history" was this view's first address; kept so an old link still lands.
   if (hash === "past" || hash === "history") { show("history"); return loadHistory(); }
@@ -360,7 +411,7 @@ async function loadSports() {
     b.disabled = !s.enabled;
     b.innerHTML = `<div class="name">${s.name}</div>` +
       (s.enabled ? `<div class="why">ready</div>` : `<div class="why">${s.reason}</div>`);
-    if (s.enabled) b.onclick = () => { location.hash = "#games"; };
+    if (s.enabled) b.onclick = () => { location.hash = s.id === "nfl" ? "#nfl" : "#games"; };
     $("sports").appendChild(b);
   }
 }
@@ -1006,6 +1057,243 @@ function drawBox(d) {
             `use, not republishing every game's box score.</p>`;
   }
   $("panel-box").innerHTML = html;
+}
+
+// ---------------------------------------------------------------- football
+/** One week's NFL slate. There is no NFL model yet (nfl/PLAN.md, Phase 6), so
+ *  where the baseball screen shows the model's price, this shows the market's
+ *  line -- the closing spread and total, which ship with the schedule -- and
+ *  each team's form. Every game opens, played or not. */
+async function loadNflSlate() {
+  $("nfl-sub").textContent = "loading…";
+  // A build made on a machine without the football tables has no football data
+  // (web/export_site.py skips it); say so rather than showing a broken screen.
+  let week;
+  try { week = await api.nflGames(); }
+  catch {
+    $("nfl-sub").textContent = "No football data in this build.";
+    $("nfl-note").textContent = "";
+    $("nfl-games").innerHTML = "";
+    return;
+  }
+  $("nfl-sub").textContent =
+    `${week.season} week ${week.week} · ${week.games.length} still to play` +
+    (week.played ? ` · ${week.played} already played, under Past.` : ".");
+  $("nfl-note").textContent =
+    "No football model yet: this is the market's closing line, not a prediction.";
+  nflList($("nfl-games"), week.games,
+          "Every game this week has been played — see Past.");
+}
+
+/** Played games, newest first: the football Past tab. There is no model to be
+ *  right or wrong, so each row reports how the MARKET's line finished. */
+async function loadNflPast() {
+  $("nfl-past-sub").textContent = "loading…";
+  let season;
+  try { season = await api.nflPast(); }
+  catch {
+    $("nfl-past-sub").textContent = "No football data in this build.";
+    $("nfl-past-games").innerHTML = "";
+    return;
+  }
+  const s = season.summary;
+  $("nfl-past-sub").textContent =
+    `${season.season} season · ${s.games} game${s.games === 1 ? "" : "s"} played.`;
+  // A rate with nothing to judge is "—", never 0%: no game covering and no
+  // game to judge are different claims.
+  const rate = (v) => v == null ? "—" : pct(v);
+  $("nfl-past-kpis").innerHTML = s.games ? [
+    [rate(s.favourite_cover_rate), "favourites covered the spread"],
+    [rate(s.over_rate), "games went over the total"],
+    [rate(s.home_win_rate), "home teams won"],
+  ].map(([v, k]) => `<div class="kpi"><div class="v">${v}</div><div class="k">${k}</div></div>`)
+   .join("") : "";
+  $("nfl-past-note").textContent = s.games
+    ? `How the closing line finished, not how a model did: there is no football model yet. ` +
+      (s.pushes ? `${s.pushes} pushed against the spread. ` : "") +
+      `${s.games} games is a small sample — a season is 272.`
+    : "";
+  nflList($("nfl-past-games"), season.games, "No games played yet this season.");
+}
+
+/** One list of football games, grouped by day, each row opening its page.
+ *  Shared by Upcoming and Past so the two cannot drift apart. */
+function nflList(box, games, emptyText) {
+  box.innerHTML = games.length ? "" : `<p class="muted">${emptyText}</p>`;
+  const byDay = {};
+  for (const g of games) (byDay[g.game_date] ??= []).push(g);
+  for (const [day, dayGames] of Object.entries(byDay)) {
+    const group = document.createElement("div");
+    group.className = "daygroup";
+    const nice = new Date(day + "T12:00:00").toLocaleDateString(undefined,
+      { weekday: "long", month: "short", day: "numeric" });
+    group.innerHTML = `<h3>${nice}</h3>`;
+    for (const g of dayGames) {
+      const b = document.createElement("button");
+      b.className = "game";
+      const line = g.spread_line == null ? "no line"
+        : g.favourite == null ? `pick'em · total ${g.total_line}`
+        : `${esc(g.favourite)} by ${Math.abs(g.spread_line)} · total ${g.total_line}`;
+      // Played: how the line finished. Upcoming: when it kicks off.
+      const tag = !g.played ? { cls: "probable", label: esc(g.kickoff ?? "scheduled") }
+        : g.spread_push ? { cls: "none", label: "push" }
+        : g.spread_line == null ? { cls: "none", label: "no line" }
+        : g.favourite_covered == null ? { cls: "none", label: "pick'em" }
+        : g.favourite_covered ? { cls: "priced", label: "favourite covered" }
+        : { cls: "none", label: "favourite missed" };
+      b.innerHTML =
+        `<span class="match">${esc(g.away)} <span class="muted">@</span> ${esc(g.home)}</span>` +
+        `<span class="venue">${line}</span>` +
+        `<span class="final">${g.played ? `${g.away_score}–${g.home_score}` : ""}</span>` +
+        `<span class="badge ${tag.cls}">${tag.label}</span>`;
+      b.onclick = () => { location.hash = "#nfl/" + g.game_id; };
+      group.appendChild(b);
+    }
+    box.appendChild(group);
+  }
+}
+
+/** One football game: the market's line, both teams' form BEFORE this game, and
+ *  the box score once it has been played. */
+async function loadNflGame(gameId, tab = "form") {
+  let res;
+  try { res = await api.nflGame(gameId); }
+  catch { location.hash = "#nfl"; return; }  // server gone, or no football data
+  if (!res.ok) { location.hash = "#nfl"; return; }
+  const d = state.detail = await res.json();
+  show("nfl-game");
+  const back = document.querySelector("#view-nfl-game [data-back]");
+  back.dataset.back = d.played ? "nfl-past" : "nfl";
+  back.innerHTML = d.played ? "&larr; past games" : "&larr; football";
+
+  $("nfl-title").textContent = d.played
+    ? `${d.away} ${d.away_score} @ ${d.home} ${d.home_score}`
+    : `${d.away} @ ${d.home}`;
+  $("nfl-game-sub").textContent =
+    [`${d.season} week ${d.week}`, d.stadium, d.game_date,
+     d.played ? "final" : `kickoff ${d.kickoff ?? "TBD"}`].filter(Boolean).join(" · ");
+
+  // Both verdicts come from the server (web/nfl.py), which is also what the
+  // Past list shows -- re-deriving them here is how the two drifted apart.
+  const cover = !d.played || d.spread_line == null ? ""
+    : d.spread_push ? " · pushed"
+    : d.home_covered ? " · home covered" : " · home did not cover";
+  const total = !d.played || d.total_line == null ? ""
+    : d.total_result == null ? ` · pushed (${d.points})`
+    : ` · went ${d.total_result} (${d.points})`;
+  $("nfl-kpis").innerHTML = [
+    [d.spread_line == null ? "—"
+      : d.favourite == null ? "pick'em"
+      : `${esc(d.favourite)} −${Math.abs(d.spread_line)}`,
+     "market spread" + cover],
+    [d.total_line ?? "—", "market total" + total],
+    [d.p_home_win_market == null ? "—" : pct(d.p_home_win_market),
+     `${esc(d.home)} win, market (vig removed)`],
+    [`${d.rest.away} / ${d.rest.home}`, "days rest (away / home)"],
+  ].map(([v, k]) => `<div class="kpi"><div class="v">${v}</div><div class="k">${k}</div></div>`).join("");
+
+  drawNflForm(d);
+  drawNflBox(d);
+  document.querySelector('#view-nfl-game .tab[data-nfl-tab="box"]').hidden = !d.box;
+  showNflTab(d.box ? tab : "form");
+
+  const qbs = [d.quarterbacks.away, d.quarterbacks.home].filter(Boolean).join(" / ");
+  $("nfl-caveats").textContent =
+    (qbs ? `Quarterbacks: ${qbs}. ` : "") +
+    "Form is this season's earlier games only -- never this one. " +
+    "No football model yet, so nothing here is a prediction: the line is the market's.";
+}
+
+function showNflTab(name) {
+  document.querySelectorAll("#view-nfl-game .tab").forEach(
+    x => x.classList.toggle("is-on", x.dataset.nflTab === name));
+  $("nfl-panel-form").hidden = name !== "form";
+  $("nfl-panel-box").hidden = name !== "box";
+}
+document.querySelectorAll("#view-nfl-game .tab").forEach(t => t.onclick = () => {
+  const id = location.hash.slice(1).split("/")[1];
+  location.hash = `#nfl/${id}/${t.dataset.nflTab}`;
+});
+
+/** Both teams, season to date and last 5, side by side -- the away team first,
+ *  as the matchup reads. */
+function drawNflForm(d) {
+  const rows = d.form_labels.filter(
+    ([key]) => d.form.away.season_to_date[key] != null || d.form.home.season_to_date[key] != null);
+  const cell = (side, scope, key) => {
+    const v = d.form[side][scope][key];
+    return v == null ? "—" : v;
+  };
+  const head = `<thead><tr><th></th>` +
+    `<th class="num">${esc(d.away)}</th><th class="num">last ${d.form.away.recent_games ?? 5}</th>` +
+    `<th class="num">${esc(d.home)}</th><th class="num">last ${d.form.home.recent_games ?? 5}</th>` +
+    `</tr></thead>`;
+  const body = rows.map(([key, label]) =>
+    `<tr><td>${esc(label)}</td>` +
+    `<td class="num">${cell("away", "season_to_date", key)}</td>` +
+    `<td class="num">${cell("away", "recent", key)}</td>` +
+    `<td class="num">${cell("home", "season_to_date", key)}</td>` +
+    `<td class="num">${cell("home", "recent", key)}</td></tr>`).join("");
+
+  const results = (side) => {
+    const form = d.form[side];
+    if (!form.games) return `<p class="muted">No games yet this season.</p>`;
+    return `<div class="card scroll"><table><thead><tr><th>${esc(d[side])}</th>` +
+      `<th class="num">score</th><th class="num">EPA margin</th></tr></thead><tbody>` +
+      form.results.map(r =>
+        `<tr><td>week ${r.week} ${r.is_home ? "vs" : "at"} ${esc(r.opponent)}</td>` +
+        `<td class="num">${r.points}–${r.points_allowed}</td>` +
+        `<td class="num">${r.epa_margin ?? "—"}</td></tr>`).join("") +
+      `</tbody></table></div>`;
+  };
+
+  $("nfl-panel-form").innerHTML = (rows.length
+    ? `<div class="card scroll"><table>${head}<tbody>${body}</tbody></table></div>` +
+      `<h2>Recent games</h2><div class="charts">${results("away")}${results("home")}</div>`
+    : `<p class="muted">Neither team has played a game this season yet, so there is no form to show.</p>`
+  ) + nflWeather(d);
+}
+
+/** What the weather was, for a played outdoor game. Wind is split along and
+ *  across the field (nfl/scripts/stadiums.py): a 15 mph wind straight down the
+ *  field is a different game from 15 across it. The stadium's own reading sits
+ *  beside the reanalysis one because the two genuinely disagree (wind
+ *  correlates 0.72 between them), and neither is the truth. */
+function nflWeather(d) {
+  const w = d.weather;
+  if (!w) return "";
+  const rows = [
+    ["temperature", w.temp_f == null ? null : `${w.temp_f}°F`],
+    ["wind", w.wind_mph == null ? null : `${w.wind_mph} mph, gusting ${w.gust_mph}`],
+    ["along the field", w.wind_along_mph == null ? null : `${w.wind_along_mph} mph`],
+    ["across the field", w.wind_cross_mph == null ? null : `${w.wind_cross_mph} mph`],
+    ["rain", w.precip_in == null ? null : `${w.precip_in} in`],
+    ["snow", w.snow_in == null ? null : `${w.snow_in} in`],
+    ["stadium reported", w.stadium_wind_mph == null ? null
+      : `${w.stadium_wind_mph} mph ${esc(w.stadium_wind_dir ?? "")}, ${w.stadium_temp_f}°F`],
+  ].filter(([, v]) => v != null);
+  if (!rows.length) return "";
+  return `<h2>Weather</h2><div class="card scroll"><table><tbody>` +
+    rows.map(([k, v]) => `<tr><td>${k}</td><td class="num">${v}</td></tr>`).join("") +
+    `</tbody></table></div>`;
+}
+
+/** The team box score, both sides, once the game has been played. */
+function drawNflBox(d) {
+  if (!d.box) { $("nfl-panel-box").innerHTML = ""; return; }
+  const fmt = (key, v) => v == null ? "—"
+    : key === "time_of_possession_sec"
+    ? `${Math.floor(v / 60)}:${String(Math.round(v % 60)).padStart(2, "0")}` : v;
+  const rows = d.box.labels.map(([key, label]) =>
+    `<tr><td>${esc(label)}</td>` +
+    `<td class="num">${fmt(key, d.box.away.lines[key])}</td>` +
+    `<td class="num">${fmt(key, d.box.home.lines[key])}</td></tr>`).join("");
+  const warning = (d.box.away.stats_ok && d.box.home.stats_ok) ? "" :
+    `<p class="muted">Upstream play-by-play is wrong for this game, so its stats are not shown.</p>`;
+  $("nfl-panel-box").innerHTML = warning +
+    `<div class="card scroll"><table><thead><tr><th></th>` +
+    `<th class="num">${esc(d.box.away.team)}</th><th class="num">${esc(d.box.home.team)}</th>` +
+    `</tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
 // ---------------------------------------------------------------- track record

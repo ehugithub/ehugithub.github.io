@@ -1,1 +1,1 @@
-[{"id": "mlb", "name": "Baseball", "enabled": true, "reason": ""}, {"id": "nba", "name": "Basketball", "enabled": false, "reason": "no fitted run model yet -- nba/models holds only player_encoder.pt"}]
+[{"id": "mlb", "name": "Baseball", "enabled": true, "reason": ""}, {"id": "nfl", "name": "Football", "enabled": true, "reason": ""}, {"id": "nba", "name": "Basketball", "enabled": false, "reason": "no fitted run model yet -- nba/models holds only player_encoder.pt"}]
