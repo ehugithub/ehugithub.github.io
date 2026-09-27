@@ -69,6 +69,23 @@ button { font: inherit; color: inherit; }
 /* --- game list --- */
 .daygroup { margin-bottom: 22px; }
 .daygroup h3 { font-size: 13px; color: var(--ink-2); margin: 0 0 8px; font-weight: 600; }
+/* Past games: each day is a <details>, so the header toggles it with a click or
+   the keyboard. The summary line carries the day's tally, so a collapsed day
+   still says how it went. */
+details.daygroup:not([open]) { margin-bottom: 8px; }
+details.daygroup > summary {
+  list-style: none; cursor: pointer; display: flex; align-items: baseline; gap: 8px;
+  margin: 0 0 8px; padding: 2px 0;
+}
+details.daygroup > summary::-webkit-details-marker { display: none; }
+details.daygroup > summary::before {
+  content: "▸"; color: var(--ink-2); font-size: 13px; width: 12px;
+  transition: transform .15s;
+}
+details.daygroup[open] > summary::before { transform: rotate(90deg); }
+details.daygroup > summary h3 { margin: 0; }
+details.daygroup > summary:hover h3 { color: var(--ink); }
+.day-controls { display: flex; gap: 14px; margin: 0 0 10px; }
 .game {
   width: 100%; text-align: left; display: flex; align-items: center; gap: 12px;
   background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
@@ -260,6 +277,10 @@ th { color: var(--ink-2); font-weight: 600; }
     </div>
     <div class="kpis" id="nfl-past-kpis"></div>
     <p class="muted" id="nfl-past-note"></p>
+    <div class="day-controls" id="nfl-past-day-controls" data-list="nfl-past-games" hidden>
+      <button class="link" data-days="open">Expand all</button>
+      <button class="link" data-days="close">Collapse all</button>
+    </div>
     <div id="nfl-past-games"></div>
   </div>
 
@@ -287,6 +308,10 @@ th { color: var(--ink-2); font-weight: 600; }
     </div>
     <div class="kpis" id="history-kpis"></div>
     <p class="muted" id="history-note"></p>
+    <div class="day-controls" id="history-day-controls" data-list="history-games" hidden>
+      <button class="link" data-days="open">Expand all</button>
+      <button class="link" data-days="close">Collapse all</button>
+    </div>
     <div id="history-games"></div>
     <h2>Calibration</h2>
     <p class="muted" style="margin-top:-4px">When the model favoured a side at this confidence,
@@ -1143,21 +1168,33 @@ async function loadNflPast() {
       (s.pushes ? `${s.pushes} pushed against the spread. ` : "") +
       `${s.games} games is a small sample — a season is 272.`
     : "";
-  nflList($("nfl-past-games"), season.games, "No games played yet this season.");
+  $("nfl-past-day-controls").hidden = !season.games.length;
+  nflList($("nfl-past-games"), season.games, "No games played yet this season.", footballPastDays);
 }
 
 /** One list of football games, grouped by day, each row opening its page.
- *  Shared by Upcoming and Past so the two cannot drift apart. */
-function nflList(box, games, emptyText) {
+ *  Shared by Upcoming and Past so the two cannot drift apart. Given a `store`
+ *  (Past), each day collapses and its header carries how the line finished. */
+function nflList(box, games, emptyText, store = null) {
   box.innerHTML = games.length ? "" : `<p class="muted">${emptyText}</p>`;
+  const collapsed = store ? store.read() : null;
   const byDay = {};
   for (const g of games) (byDay[g.game_date] ??= []).push(g);
   for (const [day, dayGames] of Object.entries(byDay)) {
-    const group = document.createElement("div");
-    group.className = "daygroup";
-    const nice = new Date(day + "T12:00:00").toLocaleDateString(undefined,
-      { weekday: "long", month: "short", day: "numeric" });
-    group.innerHTML = `<h3>${nice}</h3>`;
+    let group;
+    if (store) {
+      const judged = dayGames.filter(g => g.favourite_covered != null && !g.spread_push);
+      const covered = judged.filter(g => g.favourite_covered).length;
+      group = collapsibleDay(day, plural(dayGames.length, "game") +
+        (judged.length ? ` · favourites covered ${covered} of ${judged.length}` : ""),
+        collapsed, store);
+    } else {
+      group = document.createElement("div");
+      group.className = "daygroup";
+      const nice = new Date(day + "T12:00:00").toLocaleDateString(undefined,
+        { weekday: "long", month: "short", day: "numeric" });
+      group.innerHTML = `<h3>${nice}</h3>`;
+    }
     for (const g of dayGames) {
       const b = document.createElement("button");
       b.className = "game";
@@ -1382,17 +1419,20 @@ async function loadHistory() {
 
   // Grouped by day and clickable, like the upcoming slate. A game opens its own
   // page once it has a final score; a postponed one is listed but not clickable.
+  // Each day collapses; which ones are collapsed is remembered per browser.
   const box = $("history-games");
   box.innerHTML = past.length ? "" :
     `<p class="muted">No priced games have been played yet.</p>`;
+  $("history-day-controls").hidden = !past.length;
+  const collapsed = baseballPastDays.read();
   const byDay = {};
   for (const g of past) (byDay[g.game_date] ??= []).push(g);
   for (const [day, games] of Object.entries(byDay)) {
-    const group = document.createElement("div");
-    group.className = "daygroup";
-    const nice = new Date(day + "T12:00:00").toLocaleDateString(undefined,
-      { weekday: "long", month: "short", day: "numeric" });
-    group.innerHTML = `<h3>${nice}</h3>`;
+    const judged = games.filter(g => g.pick_correct != null);
+    const right = judged.filter(g => g.pick_correct).length;
+    const group = collapsibleDay(day, plural(games.length, "game") +
+      (judged.length ? ` · ${right} of ${judged.length} picks right` : ""),
+      collapsed, baseballPastDays);
     for (const g of games) {
       const played = g.away_runs != null;
       const tag = g.status === "not scored" ? { cls: "none", label: "not scored" }
@@ -1415,6 +1455,49 @@ async function loadHistory() {
     box.appendChild(group);
   }
 }
+
+/** Which past days a visitor collapsed, one store per sport. A per-browser
+ *  convenience only: storage can be absent or throw (private windows, blocked
+ *  site data), and then every day simply starts expanded. */
+function dayStore(key) {
+  return {
+    read() {
+      try { return new Set(JSON.parse(localStorage.getItem(key) || "[]")); }
+      catch { return new Set(); }
+    },
+    write(days) {
+      try { localStorage.setItem(key, JSON.stringify([...days])); } catch { /* not kept */ }
+    },
+  };
+}
+const baseballPastDays = dayStore("past-collapsed-days");
+const footballPastDays = dayStore("nfl-past-collapsed-days");
+
+const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+/** One day of finished games as a <details>: the header toggles it, and carries
+ *  `tally` so a collapsed day still says how it went. The caller appends the
+ *  day's game rows. Shared by both sports' Past lists. */
+function collapsibleDay(day, tally, collapsed, store) {
+  const group = document.createElement("details");
+  group.className = "daygroup";
+  group.open = !collapsed.has(day);
+  const nice = new Date(day + "T12:00:00").toLocaleDateString(undefined,
+    { weekday: "long", month: "short", day: "numeric" });
+  group.innerHTML = `<summary><h3>${nice}</h3><span class="muted">${tally}</span></summary>`;
+  group.addEventListener("toggle", () => {
+    if (group.open) collapsed.delete(day); else collapsed.add(day);
+    store.write(collapsed);
+  });
+  return group;
+}
+
+// Expand all / Collapse all: each control row names the list it acts on.
+document.querySelectorAll(".day-controls [data-days]").forEach(b => b.onclick = () => {
+  const open = b.dataset.days === "open";
+  const list = $(b.parentElement.dataset.list);
+  list.querySelectorAll("details.daygroup").forEach(d => { d.open = open; });
+});
 
 route();
 </script>
