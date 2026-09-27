@@ -302,7 +302,8 @@ const pct = (x) => (x * 100).toFixed(1) + "%";
 
 /* Static mode is the published site (web/export_site.py sets data-static="1").
    There is no server behind it, so data comes from files the export wrote,
-   nothing can be priced on demand, and book odds are not published. Paths are
+   nothing can be priced on demand, and book lines are the ones fetched when the
+   site was built (one game's lines per game file, never the board). Paths are
    RELATIVE on purpose: GitHub Pages serves a project site under
    /sportspredictor/, where "/data/..." would point at the wrong root. */
 const STATIC = document.documentElement.dataset.static === "1";
@@ -332,7 +333,6 @@ const whenText = (iso) => iso
 if (STATIC) {
   // Controls that only a live local server can answer.
   document.querySelector("#view-games .odds-bar").hidden = true;
-  document.querySelector('.tab[data-tab="bets"]').hidden = true;
 }
 
 // ?theme=dark|light forces a theme; without it the page follows the system.
@@ -420,9 +420,8 @@ async function loadSports() {
  *
  *  Not the same thing as the automatic schedule refresh, which only refetches
  *  the upcoming window. This also scrapes finished games and rebuilds the
- *  tables -- which is what a day needs before its remaining games can be
- *  priced at all, since a stub dated on or before the newest COMPLETED game is
- *  refused rather than spliced into history. */
+ *  tables, so a price includes every game played on an earlier date, not only
+ *  those scraped before the last refresh. */
 function wireDataRefresh() {
   const button = $("refresh-data");
   const label = $("refresh-state");
@@ -580,7 +579,6 @@ function poll() {
 
 // ---------------------------------------------------------------- screen 3
 async function loadDetail(gamePk, tab = "charts") {
-  if (STATIC && tab === "bets") tab = "charts";
   if (tab === "box") tab = "charts";  // a box score exists only for a played game
   const res = await api.game(gamePk);
   if (!res.ok) { location.hash = "#games"; return; }
@@ -612,8 +610,8 @@ async function loadDetail(gamePk, tab = "charts") {
   $("caveats").textContent =
     `Totals run about 2.9% under the 2026 run environment, so the over figures are ` +
     `biased low. α is the global fallback, not a 2026 fit. Lineups are projected ` +
-    `(6.8 of 9 batters correct). No market line exists for an unplayed game, so ` +
-    `these are fair prices with no vig and no edge.` + dome +
+    `(6.8 of 9 batters correct). The prices above are the model's fair prices, with ` +
+    `no vig; sportsbook lines and the model's edge at each are on the Bets tab.` + dome +
     (STATIC
       ? ` Published ${whenText(d.published_at)}. Not betting advice: this model's win ` +
         `probabilities are measurably worse than the closing betting line.`
@@ -642,8 +640,8 @@ function setDetailMode(mode) {
   document.querySelector('#view-game .tab[data-tab="box"]').hidden = mode !== "past";
   // The panel is shared: never let an upcoming game inherit the last past game's box.
   if (mode !== "past") $("panel-box").innerHTML = "";
-  // No bets on a finished game, and none ever on the published site.
-  document.querySelector('#view-game .tab[data-tab="bets"]').hidden = STATIC || mode === "past";
+  // No bets on a finished game.
+  document.querySelector('#view-game .tab[data-tab="bets"]').hidden = mode === "past";
 }
 
 /** Who the price is based on: the probable starter and the nine batters.
@@ -681,6 +679,7 @@ function drawStarters(d) {
  *  price carrying 4.5% margin is still a losing bet, and only the EV form says
  *  so. Positive edges are highlighted; they are rare and usually small. */
 function drawBets(d) {
+  if (STATIC) return drawPublishedBets(d);
   const bets = d.bets || { status: {}, books: [] };
   const st = bets.status || {};
   const age = st.age_s == null ? null : Math.round(st.age_s / 60);
@@ -715,13 +714,45 @@ function drawBets(d) {
     return;
   }
 
+  $("panel-bets").innerHTML = header + bookCards(d, bets.books);
+  wireFetch();
+}
+
+/** The published site's Bets tab: the lines fetched when the site was built.
+ *
+ *  No fetch button (there is no server), and the fetch time is shown on its own
+ *  line, because a morning line read in the evening can be well off the market. */
+function drawPublishedBets(d) {
+  const lines = d.lines;
+  const note = `<p class="muted" style="margin:0 0 12px">
+    Edge is the expected profit per unit staked at that price <em>if the model's
+    probability is right</em>. In backtests the model's win probabilities are worse
+    than the closing line and betting its positive edges lost money. Not betting advice.</p>`;
+  if (!lines) {
+    $("panel-bets").innerHTML = note +
+      `<div class="card"><p class="note">No sportsbook lines were published with this game.</p></div>`;
+    return;
+  }
+  const header = `<div class="odds-bar"><span class="muted">Lines as of
+    ${esc(whenText(lines.fetched_at))}. Published once a day; they move after that.</span></div>`;
+  if (!lines.books.length) {
+    $("panel-bets").innerHTML = header + note +
+      `<div class="card"><p class="note">No book had posted lines for this game when they
+       were fetched.</p></div>`;
+    return;
+  }
+  $("panel-bets").innerHTML = header + note + bookCards(d, lines.books);
+}
+
+/** One card per book: each market's price, the book's and the model's probability, and edge. */
+function bookCards(d, books) {
   const label = { moneyline: "ML", total: "Total", run_line: "RL" };
   const rows = (b) => b.markets.map(m => {
     const side = m.side === "home" ? d.home_team_name : m.side === "away" ? d.away_team_name
                  : m.side.charAt(0).toUpperCase() + m.side.slice(1);
     const pretty = m.american > 0 ? "+" + m.american : m.american;
     return `<tr>
-      <td>${label[m.market]}${m.line != null ? " " + m.line : ""} — ${side}</td>
+      <td>${label[m.market]}${m.line != null ? " " + m.line : ""} — ${esc(side)}</td>
       <td class="num">${pretty}</td>
       <td class="num">${(m.book_prob * 100).toFixed(1)}%</td>
       <td class="num">${(m.model_prob * 100).toFixed(1)}%</td>
@@ -729,9 +760,9 @@ function drawBets(d) {
     </tr>`;
   }).join("");
 
-  $("panel-bets").innerHTML = header + bets.books.map(b => `
+  return books.map(b => `
     <div class="card book">
-      <h5>${b.book} <span class="muted" style="font-weight:400">
+      <h5>${esc(b.book)} <span class="muted" style="font-weight:400">
         ${b.moneyline_overround ? `· ${((b.moneyline_overround - 1) * 100).toFixed(1)}% margin` : ""}
       </span></h5>
       <table>
@@ -740,7 +771,6 @@ function drawBets(d) {
         <tbody>${rows(b)}</tbody>
       </table>
     </div>`).join("");
-  wireFetch();
 }
 
 function wireFetch() {
