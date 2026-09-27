@@ -95,6 +95,8 @@ details.daygroup > summary:hover h3 { color: var(--ink); }
 .game[disabled] { cursor: not-allowed; opacity: .55; }
 .game .match { flex: 1; font-weight: 500; }
 .game .venue { color: var(--muted); font-size: 12px; }
+/* Football: the model's line reads first, the market's after it. */
+.game .model { font-weight: 600; font-size: 13px; font-variant-numeric: tabular-nums; }
 .game .final { font-weight: 650; font-variant-numeric: tabular-nums; min-width: 48px; text-align: right; }
 /* Box score: innings are a grid of numbers, so centred; player names read left. */
 table.linescore th, table.linescore td { text-align: center; }
@@ -122,6 +124,7 @@ tr.sub-player td:first-child { padding-left: 20px; color: var(--ink-2); }
 .badge.confirmed { color: var(--good);  border-color: var(--good); }
 .badge.probable  { color: var(--cat-1); border-color: var(--cat-1); }
 .badge.none      { color: var(--muted); border-color: var(--border); }
+.badge.bet       { color: var(--good);  border-color: var(--good); font-weight: 600; }
 
 /* --- bets --- */
 .odds-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
@@ -1222,28 +1225,38 @@ function nflList(box, games, emptyText, store = null) {
     }
     for (const g of dayGames) {
       const b = document.createElement("button");
-      b.className = "game";
       const market = g.spread_line == null ? "no line"
         : g.favourite == null ? `pick'em · total ${g.total_line}`
         : `${esc(g.favourite)} by ${Math.abs(g.spread_line)} · total ${g.total_line}`;
       const results = g.bet_results || [];
       const won = results.filter(r => r.result === "won").length;
       const lost = results.filter(r => r.result === "lost").length;
-      const line = market + (!g.model ? ""
-        : g.played ? (results.length ? ` · model bets ${won}–${lost}` : "")
-        : ` · model ${esc(nflFav(g, g.model.mu_margin))}, ${g.model.mu_total}` +
-          (g.model.bets ? ` · ${plural(g.model.bets, "bet")}` : ""));
+      const m = g.model;
+      const model = !m ? ""
+        : `model ${esc(nflFav(g, m.mu_margin))} · ${m.mu_total}` +
+          (g.played && results.length ? ` · bets ${won}–${lost}` : "");
+      // A game under way that was never priced says so, rather than showing its
+      // kickoff time as if it were still to come.
+      const started = !g.played && g.kickoff_utc && Date.now() >= Date.parse(g.kickoff_utc);
+      const bets = !g.played && m ? m.bets : [];
+      const betName = (b) => b.market === "total" ? b.side
+        : `${b.side === "home" ? g.home : g.away} ${b.market === "moneyline" ? "ML" : "spread"}`;
       // Played: how the line finished. Upcoming: when it kicks off.
-      const tag = !g.played ? { cls: "probable", label: esc(g.kickoff ?? "scheduled") }
+      const tag = started ? (m ? { cls: "probable", label: "under way" }
+                               : { cls: "none", label: "not predicted" })
+        : !g.played ? { cls: "probable", label: esc(g.kickoff ?? "scheduled") }
         : g.spread_push ? { cls: "none", label: "push" }
         : g.spread_line == null ? { cls: "none", label: "no line" }
         : g.favourite_covered == null ? { cls: "none", label: "pick'em" }
         : g.favourite_covered ? { cls: "priced", label: "favourite covered" }
         : { cls: "none", label: "favourite missed" };
+      b.className = "game" + (m ? " is-priced" : "");
       b.innerHTML =
         `<span class="match">${esc(g.away)} <span class="muted">@</span> ${esc(g.home)}</span>` +
-        `<span class="venue">${line}</span>` +
+        (m ? `<span class="model">${model}</span>` : "") +
+        `<span class="venue">market ${market}</span>` +
         `<span class="final">${g.played ? `${g.away_score}–${g.home_score}` : ""}</span>` +
+        bets.map(bet => `<span class="badge bet">bet: ${esc(betName(bet))}</span>`).join("") +
         `<span class="badge ${tag.cls}">${tag.label}</span>`;
       b.onclick = () => { location.hash = "#nfl/" + g.game_id; };
       group.appendChild(b);
