@@ -291,9 +291,11 @@ th { color: var(--ink-2); font-weight: 600; }
     <div class="kpis" id="nfl-kpis"></div>
     <div class="tabs">
       <button class="tab is-on" data-nfl-tab="form">Form</button>
+      <button class="tab" data-nfl-tab="model" hidden>Model</button>
       <button class="tab" data-nfl-tab="box" hidden>Box score</button>
     </div>
     <div id="nfl-panel-form"></div>
+    <div id="nfl-panel-model" hidden></div>
     <div id="nfl-panel-box" hidden></div>
     <p class="muted" id="nfl-caveats" style="margin-top:14px"></p>
   </div>
@@ -739,7 +741,7 @@ function drawBets(d) {
     return;
   }
 
-  $("panel-bets").innerHTML = header + bookCards(d, bets.books);
+  $("panel-bets").innerHTML = header + bookCards(bets.books, mlbNames(d));
   wireFetch();
 }
 
@@ -766,14 +768,17 @@ function drawPublishedBets(d) {
        were fetched.</p></div>`;
     return;
   }
-  $("panel-bets").innerHTML = header + note + bookCards(d, lines.books);
+  $("panel-bets").innerHTML = header + note + bookCards(lines.books, mlbNames(d));
 }
 
-/** One card per book: each market's price, the book's and the model's probability, and edge. */
-function bookCards(d, books) {
-  const label = { moneyline: "ML", total: "Total", run_line: "RL" };
+function mlbNames(d) { return { home: d.home_team_name, away: d.away_team_name }; }
+
+/** One card per book: each market's price, the book's and the model's probability, and edge.
+ *  Shared by baseball and football; ``names`` are the home and away teams' names. */
+function bookCards(books, names) {
+  const label = { moneyline: "ML", total: "Total", run_line: "RL", spread: "Spread" };
   const rows = (b) => b.markets.map(m => {
-    const side = m.side === "home" ? d.home_team_name : m.side === "away" ? d.away_team_name
+    const side = m.side === "home" ? names.home : m.side === "away" ? names.away
                  : m.side.charAt(0).toUpperCase() + m.side.slice(1);
     const pretty = m.american > 0 ? "+" + m.american : m.american;
     return `<tr>
@@ -1115,10 +1120,8 @@ function drawBox(d) {
 }
 
 // ---------------------------------------------------------------- football
-/** One week's NFL slate. There is no NFL model yet (nfl/PLAN.md, Phase 6), so
- *  where the baseball screen shows the model's price, this shows the market's
- *  line -- the closing spread and total, which ship with the schedule -- and
- *  each team's form. Every game opens, played or not. */
+/** One week's NFL slate: the market's line and, once predict.py has logged the
+ *  game, the model's (nfl/PLAN.md, Phase 8). Every game opens, played or not. */
 async function loadNflSlate() {
   $("nfl-sub").textContent = "loading…";
   // A build made on a machine without the football tables has no football data
@@ -1134,14 +1137,17 @@ async function loadNflSlate() {
   $("nfl-sub").textContent =
     `${week.season} week ${week.week} · ${week.games.length} still to play` +
     (week.played ? ` · ${week.played} already played, under Past.` : ".");
-  $("nfl-note").textContent =
-    "No football model yet: this is the market's closing line, not a prediction.";
+  $("nfl-note").textContent = week.games.some(g => g.model)
+    ? "The line is the market's; \"model\" is the model's blended line, logged before " +
+      "kickoff. In development it did not beat the closing line in any market."
+    : "No prediction logged for this week yet: the line shown is the market's.";
   nflList($("nfl-games"), week.games,
           "Every game this week has been played — see Past.");
 }
 
-/** Played games, newest first: the football Past tab. There is no model to be
- *  right or wrong, so each row reports how the MARKET's line finished. */
+/** Played games, newest first: the football Past tab. Each row reports how the
+ *  market's line finished and how the model's declared bets did; the season's
+ *  running scoreboard (score_live.py) sits above the market's summary. */
 async function loadNflPast() {
   $("nfl-past-sub").textContent = "loading…";
   let season;
@@ -1157,14 +1163,33 @@ async function loadNflPast() {
   // A rate with nothing to judge is "—", never 0%: no game covering and no
   // game to judge are different claims.
   const rate = (v) => v == null ? "—" : pct(v);
+  const board = season.scoreboard;
+  // Any of these can be null: a bootstrap interval on a handful of games has no
+  // finite ends, and score_live writes those as null rather than NaN.
+  const signed = (v, digits, unit = "") =>
+    v == null ? "—" : `${v >= 0 ? "+" : ""}${v.toFixed(digits)}${unit}`;
+  const total = board && board.report ? board.report.total : null;
+  const model = total ? [
+    [signed(total.slope, 2),
+     `model total's slope vs the close (${board.scored_games} games` +
+     (total.slope_lo == null || total.slope_hi == null ? ")"
+       : `; 95%: ${total.slope_lo.toFixed(2)} to ${total.slope_hi.toFixed(2)})`)],
+    ...board.bets.filter(b => b.rule === "declared").map(b =>
+      [signed(b.roi == null ? null : b.roi * 100, 1, "%"),
+       `${b.market} bets, ROI (${b.bets} bets)`]),
+  ] : [];
   $("nfl-past-kpis").innerHTML = s.games ? [
+    ...model,
     [rate(s.favourite_cover_rate), "favourites covered the spread"],
     [rate(s.over_rate), "games went over the total"],
     [rate(s.home_win_rate), "home teams won"],
   ].map(([v, k]) => `<div class="kpi"><div class="v">${v}</div><div class="k">${k}</div></div>`)
    .join("") : "";
   $("nfl-past-note").textContent = s.games
-    ? `How the closing line finished, not how a model did: there is no football model yet. ` +
+    ? (board ? `The model is scored on ${board.scored_games} game${board.scored_games === 1 ? "" : "s"} ` +
+               `predicted before kickoff this season — far too few to judge; the test is the ` +
+               `whole season, declared in advance. `
+             : "No game this season has been scored against a logged prediction yet. ") +
       (s.pushes ? `${s.pushes} pushed against the spread. ` : "") +
       `${s.games} games is a small sample — a season is 272.`
     : "";
@@ -1198,9 +1223,16 @@ function nflList(box, games, emptyText, store = null) {
     for (const g of dayGames) {
       const b = document.createElement("button");
       b.className = "game";
-      const line = g.spread_line == null ? "no line"
+      const market = g.spread_line == null ? "no line"
         : g.favourite == null ? `pick'em · total ${g.total_line}`
         : `${esc(g.favourite)} by ${Math.abs(g.spread_line)} · total ${g.total_line}`;
+      const results = g.bet_results || [];
+      const won = results.filter(r => r.result === "won").length;
+      const lost = results.filter(r => r.result === "lost").length;
+      const line = market + (!g.model ? ""
+        : g.played ? (results.length ? ` · model bets ${won}–${lost}` : "")
+        : ` · model ${esc(nflFav(g, g.model.mu_margin))}, ${g.model.mu_total}` +
+          (g.model.bets ? ` · ${plural(g.model.bets, "bet")}` : ""));
       // Played: how the line finished. Upcoming: when it kicks off.
       const tag = !g.played ? { cls: "probable", label: esc(g.kickoff ?? "scheduled") }
         : g.spread_push ? { cls: "none", label: "push" }
@@ -1257,24 +1289,106 @@ async function loadNflGame(gameId, tab = "form") {
     [d.p_home_win_market == null ? "—" : pct(d.p_home_win_market),
      `${esc(d.home)} win, market (vig removed)`],
     [`${d.rest.away} / ${d.rest.home}`, "days rest (away / home)"],
+    ...(d.prediction ? [
+      [esc(nflFav(d, d.prediction.blend_mu_margin)), "model spread (blended)"],
+      [d.prediction.blend_mu_total ?? "—", "model total (blended)"],
+      [d.prediction.blend_p_home_win == null ? "—" : pct(d.prediction.blend_p_home_win),
+       `${esc(d.home)} win, model`],
+    ] : []),
   ].map(([v, k]) => `<div class="kpi"><div class="v">${v}</div><div class="k">${k}</div></div>`).join("");
 
   drawNflForm(d);
+  drawNflModel(d);
   drawNflBox(d);
   document.querySelector('#view-nfl-game .tab[data-nfl-tab="box"]').hidden = !d.box;
-  showNflTab(d.box ? tab : "form");
+  document.querySelector('#view-nfl-game .tab[data-nfl-tab="model"]').hidden = !d.prediction;
+  const available = { form: true, model: !!d.prediction, box: !!d.box };
+  showNflTab(available[tab] ? tab : "form");
 
   const qbs = [d.quarterbacks.away, d.quarterbacks.home].filter(Boolean).join(" / ");
   $("nfl-caveats").textContent =
     (qbs ? `Quarterbacks: ${qbs}. ` : "") +
     "Form is this season's earlier games only -- never this one. " +
-    "No football model yet, so nothing here is a prediction: the line is the market's.";
+    (d.prediction
+      ? "The model's prediction was logged before kickoff and is never edited. In development " +
+        "it did not beat the closing line in any market; 2026 is its test. Not betting advice."
+      : "No prediction was logged for this game: the line shown is the market's.");
+}
+
+/** Which team a home-positive margin favours, in words: "BUF by 5.5". */
+function nflFav(d, margin) {
+  if (margin == null) return "—";
+  if (margin === 0) return "even";
+  return `${margin > 0 ? d.home : d.away} by ${Math.abs(margin)}`;
+}
+
+/** The logged prediction: the model's own numbers, the blended ones it prices
+ *  with, the market's, the declared bets, what it was fed, and every book's line
+ *  re-priced by the model AT that book's line. */
+function drawNflModel(d) {
+  const p = d.prediction;
+  if (!p) { $("nfl-panel-model").innerHTML = ""; return; }
+  const source = (s) => s === "odds_api" ? "books' consensus" : s === "nflverse" ? "nflverse" : "none";
+  const compare = `<div class="card scroll"><table>
+    <thead><tr><th class="txt"></th><th class="num">model</th><th class="num">blended</th>
+      <th class="num">market</th></tr></thead><tbody>
+    <tr><td class="txt">spread</td><td class="num">${esc(nflFav(d, p.mu_margin))}</td>
+      <td class="num">${esc(nflFav(d, p.blend_mu_margin))}</td>
+      <td class="num">${esc(nflFav(d, p.spread_line))} <span class="muted">(${source(p.spread_source)})</span></td></tr>
+    <tr><td class="txt">total</td><td class="num">${p.mu_total ?? "—"}</td>
+      <td class="num">${p.blend_mu_total ?? "—"}</td>
+      <td class="num">${p.total_line ?? "—"} <span class="muted">(${source(p.total_source)})</span></td></tr>
+    <tr><td class="txt">${esc(d.home)} win</td>
+      <td class="num">${p.p_home_win == null ? "—" : pct(p.p_home_win)}</td>
+      <td class="num">${p.blend_p_home_win == null ? "—" : pct(p.blend_p_home_win)}</td>
+      <td class="num">${d.p_home_win_market == null ? "—" : pct(d.p_home_win_market)}</td></tr>
+    </tbody></table></div>
+    <p class="note">"Model" is the model's own mean: what the season is scored on. "Blended" moves
+    the market's line part of the way toward it, by how much the model's departures from the
+    close have been borne out in past seasons; bets are priced from the blend.</p>`;
+
+  const results = Object.fromEntries((d.bet_results || []).map(r => [r.market, r.result]));
+  const side = (b) => b.side === "home" ? d.home : b.side === "away" ? d.away
+    : b.side.charAt(0).toUpperCase() + b.side.slice(1);
+  const bets = p.bets.length
+    ? `<ul>${p.bets.map(b => `<li>${esc(b.market)}: ${esc(side(b))}` +
+        `${b.display_line ? " " + esc(b.display_line) : ""} at ${b.american > 0 ? "+" : ""}` +
+        `${b.american}, expected value ${(b.ev * 100).toFixed(1)}% per unit` +
+        (results[b.market] ? ` — <strong>${results[b.market]}</strong>` : "") + `</li>`).join("")}</ul>`
+    : `<p class="muted">None: no side cleared the season's threshold` +
+      (p.spread_source !== "odds_api" ? " (and a game not yet on the board places none)" : "") + `.</p>`;
+
+  const w = p.weather || {};
+  const num = (v, places) => v == null ? "?" : Number(v).toFixed(places);
+  const weather = w.exposed !== 1 ? `${esc(p.roof || "roof")}: no weather reaches the field`
+    : w.weather_known !== 1 ? "no forecast (priced at typical weather)"
+    : `forecast ${num(w.wind_mph, 1)} mph wind (${num(w.wind_along_mph, 1)} along the field), ` +
+      `${num(w.temp_f, 0)}°F, ${num(w.precip_in, 2)} in rain` +
+      (p.lead_hours != null ? `, made ${Math.round(p.lead_hours)} h before kickoff` : "");
+  const qbs = [p.quarterbacks.away, p.quarterbacks.home].filter(Boolean).join(" / ");
+  const inputs = `<div class="card scroll"><table><tbody>
+    <tr><td class="txt">predicted</td><td class="num">${esc(whenText(p.predicted_at))}</td></tr>
+    <tr><td class="txt">quarterbacks (projected)</td><td class="num">${esc(qbs || "—")}</td></tr>
+    <tr><td class="txt">weather</td><td class="num">${weather}</td></tr>
+    <tr><td class="txt">trained through</td><td class="num">${esc(p.train_through)}</td></tr>
+    <tr><td class="txt">model · code</td><td class="num">${esc(p.model_key)} · ${esc(p.commit)}</td></tr>
+    </tbody></table></div>`;
+
+  const books = p.books.length
+    ? `<p class="muted">Lines as of ${esc(whenText(p.board_fetched_at))}. Edge is the expected
+       profit per unit staked at that price <em>if the model's probability is right</em>.</p>` +
+      bookCards(p.books, { home: d.home, away: d.away })
+    : `<p class="muted">No book had posted this game when the prediction was made.</p>`;
+
+  $("nfl-panel-model").innerHTML = compare + `<h2>Declared bets</h2>` + bets +
+    `<h2>What it was given</h2>` + inputs + `<h2>Every book</h2>` + books;
 }
 
 function showNflTab(name) {
   document.querySelectorAll("#view-nfl-game .tab").forEach(
     x => x.classList.toggle("is-on", x.dataset.nflTab === name));
   $("nfl-panel-form").hidden = name !== "form";
+  $("nfl-panel-model").hidden = name !== "model";
   $("nfl-panel-box").hidden = name !== "box";
 }
 document.querySelectorAll("#view-nfl-game .tab").forEach(t => t.onclick = () => {
