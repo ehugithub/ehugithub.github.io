@@ -1,1 +1,1 @@
-[{"id": "mlb", "name": "Baseball", "enabled": true, "reason": ""}, {"id": "nfl", "name": "Football", "enabled": true, "reason": ""}, {"id": "nba", "name": "Basketball", "enabled": false, "reason": "live checks in progress -- not published yet"}]
+[{"id": "mlb", "name": "Baseball", "enabled": true, "reason": ""}, {"id": "nfl", "name": "Football", "enabled": true, "reason": ""}, {"id": "nba", "name": "Basketball", "enabled": true, "reason": ""}]
