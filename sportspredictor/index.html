@@ -5,12 +5,18 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sports Predictor</title>
 <script>
-  // ?theme=dark|light forces a theme; without it the page follows the system.
-  const t = new URLSearchParams(location.search).get("theme");
-  if (t === "dark" || t === "light") document.documentElement.dataset.theme = t;
+  // Before first paint: ?theme=dark|light forces a theme for this visit (not saved); otherwise
+  // the visitor's saved choice; otherwise nothing, and the page follows the system.
+  (function () {
+    var theme = new URLSearchParams(location.search).get("theme");
+    if (theme !== "dark" && theme !== "light") {
+      try { theme = localStorage.getItem("theme"); } catch (e) { theme = null; }
+    }
+    if (theme === "dark" || theme === "light") document.documentElement.dataset.theme = theme;
+  })();
 </script>
-  <script type="module" crossorigin src="./assets/index-CeTiZ1D6.js"></script>
-  <link rel="stylesheet" crossorigin href="./assets/index-BLafnLOa.css">
+  <script type="module" crossorigin src="./assets/index-S0bpoEz-.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-B6whSLyh.css">
 </head>
 <body>
 <div id="root"></div>
